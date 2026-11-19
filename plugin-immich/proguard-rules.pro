@@ -1,0 +1,2 @@
+-keep class com.stasisstate.slatetv.plugin.api.** { *; }
+-keep class com.stasisstate.slatetv.plugin.immich.** { *; }

@@ -48,7 +48,8 @@ class ImmichApiClient(
     @Volatile
     private var cachedUntrustedClient: OkHttpClient? = null
 
-    private fun clientFor(config: ImmichConfig): OkHttpClient {
+    @Synchronized
+    internal fun clientFor(config: ImmichConfig): OkHttpClient {
         if (!config.allowUntrustedTls) return baseStandardClient
         val host = config.normalizedServerUrl.toHttpUrlOrNull()?.host?.lowercase() ?: return baseStandardClient
         val existing = cachedUntrustedClient

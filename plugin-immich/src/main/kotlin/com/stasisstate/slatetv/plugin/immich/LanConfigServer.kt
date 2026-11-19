@@ -259,8 +259,11 @@ class LanConfigServer(
                     return
                 }
 
-                onCredentialsSubmitted(serverUrl, apiKey, allowUntrusted)
-                writeResponse(output, 200, "text/html; charset=utf-8", renderSuccessPage(serverUrl))
+                try {
+                    writeResponse(output, 200, "text/html; charset=utf-8", renderSuccessPage(serverUrl))
+                } finally {
+                    onCredentialsSubmitted(serverUrl, apiKey, allowUntrusted)
+                }
             }
 
             else -> writeResponse(output, 404, "text/plain", "Not Found")
