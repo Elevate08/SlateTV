@@ -50,6 +50,8 @@ internal class ImmichMediaBuffer(
     private val api: ImmichApiClient,
     private val refillScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val rpcWaitBudgetMs: Long = RPC_WAIT_BUDGET_MS,
+    private val handoffGraceMs: Long = HANDOFF_GRACE_MS,
+    private val nowMs: () -> Long = { System.nanoTime() / 1_000_000L },
 ) {
     private val stateLock = Any()
     private val readyQueue = ArrayDeque<PluginMediaItem>()
@@ -58,12 +60,44 @@ internal class ImmichMediaBuffer(
     private var itemSignal: CompletableDeferred<Unit>? = null
     private var plugin: ImmichBackgroundPlugin? = null
 
+    /** Cached media names handed to Slate TV, with handoff time, kept alive for [handoffGraceMs]. */
+    private val recentHandoffs = ArrayDeque<Pair<String, Long>>()
+
+    /**
+     * Cache file names that must not be evicted: every `content://` item still queued plus items
+     * handed to Slate TV within the grace window (the host may not have opened them yet).
+     */
+    fun protectedMediaNames(): Set<String> = synchronized(stateLock) {
+        pruneHandoffsLocked()
+        buildSet {
+            readyQueue.forEach { item -> immichMediaNameOf(item.imageUri)?.let(::add) }
+            recentHandoffs.forEach { (name, _) -> add(name) }
+        }
+    }
+
+    private fun pruneHandoffsLocked() {
+        val cutoff = nowMs() - handoffGraceMs
+        while (recentHandoffs.isNotEmpty() &&
+            (recentHandoffs.first().second < cutoff || recentHandoffs.size > MAX_GRACE_ITEMS)
+        ) {
+            recentHandoffs.removeFirst()
+        }
+    }
+
+    private fun recordHandoffsLocked(items: List<PluginMediaItem>) {
+        if (items.isEmpty()) return
+        val now = nowMs()
+        items.forEach { item -> immichMediaNameOf(item.imageUri)?.let { recentHandoffs.addLast(it to now) } }
+        pruneHandoffsLocked()
+    }
+
     fun invalidateAll() {
         synchronized(stateLock) {
             configGeneration++
             activeRefill?.cancel()
             activeRefill = null
-            readyQueue.clear()
+            readyQueue.clear() // also drops queued-item cache protection
+            pruneHandoffsLocked()
             plugin = null
             api.resetPagination()
             itemSignal?.complete(Unit)
@@ -81,6 +115,7 @@ internal class ImmichMediaBuffer(
 
         val immediate = synchronized(stateLock) {
             val popped = popReadyLocked(limit, request.lastMediaId)
+            recordHandoffsLocked(popped)
             if (readyQueue.size < LOW_WATERMARK) {
                 ensureRefillLocked(store, request, publishLocal)
             }
@@ -90,7 +125,9 @@ internal class ImmichMediaBuffer(
 
         return withTimeoutOrNull<List<PluginMediaItem>>(rpcWaitBudgetMs) {
             while (true) {
-                val ready = synchronized(stateLock) { popReadyLocked(limit, request.lastMediaId) }
+                val ready = synchronized(stateLock) {
+                    popReadyLocked(limit, request.lastMediaId).also(::recordHandoffsLocked)
+                }
                 if (ready.isNotEmpty()) return@withTimeoutOrNull ready
 
                 val signal = synchronized(stateLock) {
@@ -174,6 +211,8 @@ internal class ImmichMediaBuffer(
         private const val LOW_WATERMARK = 3
         private const val TARGET_READY_COUNT = 4
         private const val MAX_READY_ITEMS = 8
+        private const val HANDOFF_GRACE_MS = 30_000L
+        private const val MAX_GRACE_ITEMS = 12
     }
 }
 
@@ -219,7 +258,12 @@ class ImmichBackgroundPluginService : Service() {
                 request = request,
                 store = store,
                 publishLocal = { config, item ->
-                    cache.publish(config, item, listOf(SLATE_PACKAGE)).toString()
+                    cache.publish(
+                        config,
+                        item,
+                        listOf(SLATE_PACKAGE),
+                        protectedNames = ImmichRuntime.buffer.protectedMediaNames(),
+                    ).toString()
                 },
             )
         }
