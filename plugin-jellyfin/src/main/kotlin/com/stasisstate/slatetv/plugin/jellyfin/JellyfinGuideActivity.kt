@@ -29,8 +29,7 @@ class JellyfinGuideActivity : JellyfinTvActivity() {
     private var selectedChannel: String? = null
     private var activeApi: JellyfinApiClient? = null
     private var activeUserId: String? = null
-    private var totalChannels: Int = 0
-    private var nextStartIndex: Int = 0
+    private var pagination = GuidePaginationState()
     private val loadedChannels = mutableListOf<Channel>()
     private val upcomingByChannel = mutableMapOf<String, Program>()
     private val timeFormat = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withZone(ZoneId.systemDefault())
@@ -79,8 +78,7 @@ class JellyfinGuideActivity : JellyfinTvActivity() {
         load?.cancel()
         loadedChannels.clear()
         upcomingByChannel.clear()
-        totalChannels = 0
-        nextStartIndex = 0
+        pagination = GuidePaginationState()
         loadMoreButton.visibility = View.GONE
         load = scope.launch {
             status.visibility = View.VISIBLE
@@ -106,8 +104,7 @@ class JellyfinGuideActivity : JellyfinTvActivity() {
                     return@launch
                 }
                 loadedChannels.addAll(firstPage.items)
-                totalChannels = maxOf(firstPage.total, firstPage.items.size)
-                nextStartIndex = firstPage.received
+                pagination.onPageLoaded(firstPage.received, firstPage.items.size, firstPage.total)
                 status.visibility = View.GONE
                 updateLoadMoreButton()
                 render(focusSelected = true)
@@ -123,22 +120,19 @@ class JellyfinGuideActivity : JellyfinTvActivity() {
     private fun loadNextPage() {
         val api = activeApi ?: return
         val userId = activeUserId ?: return
-        if (load?.isActive == true || nextStartIndex >= totalChannels) return
+        if (load?.isActive == true || !pagination.hasMore) return
         load = scope.launch {
             loadMoreButton.isEnabled = false
             loadMoreButton.text = "Loading more channels…"
             try {
-                val page = api.channelPage(userId, PAGE_SIZE, false, nextStartIndex)
-                if (page.items.isNotEmpty()) {
-                    val existingIds = loadedChannels.mapTo(HashSet()) { it.id }
-                    val added = page.items.filter { existingIds.add(it.id) }
-                    loadedChannels.addAll(added)
-                    totalChannels = maxOf(page.total, loadedChannels.size)
-                    nextStartIndex += page.received
+                val page = api.channelPage(userId, PAGE_SIZE, false, pagination.nextStartIndex)
+                val existingIds = loadedChannels.mapTo(HashSet()) { it.id }
+                val added = page.items.filter { existingIds.add(it.id) }
+                loadedChannels.addAll(added)
+                pagination.onPageLoaded(page.received, added.size, page.total)
+                if (added.isNotEmpty()) {
                     render(focusSelected = false)
                     fetchUpNextFor(api, userId, added)
-                } else {
-                    nextStartIndex = totalChannels
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -170,10 +164,9 @@ class JellyfinGuideActivity : JellyfinTvActivity() {
     }
 
     private fun updateLoadMoreButton() {
-        val remaining = totalChannels - loadedChannels.size
-        if (remaining > 0) {
+        if (pagination.hasMore) {
             loadMoreButton.visibility = View.VISIBLE
-            loadMoreButton.text = "Load more channels (${loadedChannels.size} of $totalChannels)"
+            loadMoreButton.text = "Load more channels (${pagination.loadedCount} loaded)"
         } else {
             loadMoreButton.visibility = View.GONE
         }
