@@ -1,0 +1,33 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <queries>
+        <package android:name="org.jellyfin.androidtv" />
+        <package android:name="com.stasisstate.slatetv" />
+    </queries>
+    <application android:allowBackup="false" android:label="Jellyfin Live TV"
+        android:banner="@drawable/tv_banner" android:theme="@style/JellyfinTheme"
+        android:networkSecurityConfig="@xml/network_security_config">
+        <activity android:name=".JellyfinSettingsActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".JellyfinGuideActivity" android:exported="true" />
+        <service android:name=".JellyfinShelfPluginService" android:exported="true">
+            <intent-filter>
+                <action android:name="com.stasisstate.slatetv.plugin.SHELF_PROVIDER" />
+            </intent-filter>
+            <meta-data android:name="com.stasisstate.slatetv.plugin.ID" android:value="com.stasisstate.slatetv.plugin.jellyfin.livetv" />
+            <meta-data android:name="com.stasisstate.slatetv.plugin.NAME" android:value="Jellyfin Live TV" />
+            <meta-data android:name="com.stasisstate.slatetv.plugin.DESCRIPTION" android:value="Live TV channels and program guide from your Jellyfin server" />
+            <meta-data android:name="com.stasisstate.slatetv.plugin.SETTINGS_ACTIVITY" android:value="com.stasisstate.slatetv.plugin.jellyfin.JellyfinSettingsActivity" />
+            <meta-data android:name="com.stasisstate.slatetv.plugin.GUIDE_ACTIVITY" android:value="com.stasisstate.slatetv.plugin.jellyfin.JellyfinGuideActivity" />
+            <meta-data android:name="com.stasisstate.slatetv.plugin.API_VERSION" android:value="1" />
+        </service>
+    </application>
+</manifest>

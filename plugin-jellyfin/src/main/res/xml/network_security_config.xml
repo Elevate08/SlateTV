@@ -1,0 +1,4 @@
+<network-security-config>
+    <!-- LAN servers can use arbitrary hostnames. The REST client's DNS policy enforces LAN scope. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

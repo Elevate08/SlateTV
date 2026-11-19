@@ -1,0 +1,5 @@
+-keepnames class com.stasisstate.slatetv.plugin.jellyfin.JellyfinSettingsActivity
+-keepnames class com.stasisstate.slatetv.plugin.jellyfin.JellyfinGuideActivity
+-keep class com.stasisstate.slatetv.plugin.api.ShelfPayload { *; }
+-keep class com.stasisstate.slatetv.plugin.api.ShelfItem { *; }
+-keep class com.stasisstate.slatetv.plugin.api.ShelfPluginInfo { *; }

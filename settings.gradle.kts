@@ -25,3 +25,5 @@ include(":plugin-api")
 include(":plugin-immich")
 include(":plugin-sample-external")
 include(":app")
+
+include(":plugin-jellyfin")

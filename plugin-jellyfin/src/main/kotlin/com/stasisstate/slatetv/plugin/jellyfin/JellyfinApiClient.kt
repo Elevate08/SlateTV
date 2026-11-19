@@ -1,0 +1,221 @@
+package com.stasisstate.slatetv.plugin.jellyfin
+
+import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.*
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.IOException
+import java.net.InetAddress
+import java.net.Proxy
+import java.net.UnknownHostException
+import java.security.cert.X509Certificate
+import java.time.Instant
+import java.util.concurrent.TimeUnit.SECONDS
+import javax.net.ssl.SSLContext
+import javax.net.ssl.X509TrustManager
+import kotlin.coroutines.resumeWithException
+
+data class Program(
+    val id: String,
+    val name: String,
+    val episodeTitle: String?,
+    val overview: String?,
+    val start: Instant?,
+    val end: Instant?,
+    val isLive: Boolean,
+) {
+    val title: String get() = listOfNotNull(name, episodeTitle).joinToString(" · ")
+    private fun validTimes() = start != null && end != null && end > start
+
+    fun progressPercent(now: Instant): Int {
+        if (!validTimes()) return -1
+        val beginning = start!!.toEpochMilli()
+        val duration = end!!.toEpochMilli() - beginning
+        if (duration <= 0) return -1
+        return (((now.toEpochMilli() - beginning).toDouble() / duration) * 100).toInt().coerceIn(0, 100)
+    }
+
+    fun remainingTime(now: Instant): String? {
+        if (!validTimes() || now < start!! || now > end!!) return null
+        val seconds = end.epochSecond - now.epochSecond
+        val minutes = (seconds + 59) / 60
+        return if (minutes >= 60) "${minutes / 60}h ${minutes % 60}m left" else "${minutes}m left"
+    }
+}
+
+data class Channel(val id: String, val name: String, val number: String?, val imageUri: String?, val current: Program?)
+
+private fun JSONObject.string(key: String) = if (isNull(key)) null else optString(key).trim().ifEmpty { null }
+private fun JSONObject.instant(key: String) = string(key)?.let {
+    runCatching { Instant.parse(it).also { time -> time.toEpochMilli() } }.getOrNull()
+}
+
+private fun JSONObject.program() = Program(
+    string("Id").orEmpty(), string("Name") ?: "Untitled program", string("EpisodeTitle"),
+    string("Overview"), instant("StartDate"), instant("EndDate"), optBoolean("IsLive"),
+)
+
+private fun JSONArray.objects() = (0 until length()).mapNotNull(::optJSONObject)
+private fun JSONObject.items() = optJSONArray("Items")?.objects().orEmpty()
+
+class JellyfinApiClient(private val config: JellyfinConfig) {
+    private val base = requireNotNull(parseServerUrl(config.serverUrl)) { "Enter a valid Jellyfin server URL." }
+    init { require(validApiKey(config.apiKey)) { "Enter a valid API key." } }
+
+    val authorization = """MediaBrowser Client="Slate TV Jellyfin", Device="Android TV", DeviceId="slatetv-jellyfin", Version="1.0.0", Token="${config.apiKey}""""
+    private val insecureLan = config.allowUntrustedTls && base.isHttps
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(6, SECONDS).readTimeout(10, SECONDS).callTimeout(15, SECONDS)
+        .followRedirects(false).followSslRedirects(false)
+        .addInterceptor { chain ->
+            var request = chain.request()
+            repeat(6) {
+                val response = chain.proceed(request)
+                val target = response.header("Location")?.let(request.url::resolve)
+                if (response.code !in setOf(301, 302, 303, 307, 308) || target == null) {
+                    return@addInterceptor response
+                }
+                response.close()
+                val sameOrigin = request.url.origin() == target.origin()
+                if (insecureLan && !sameOrigin) throw IOException("LAN TLS redirects must stay on the configured origin.")
+                if (request.url.isHttps && !target.isHttps) throw IOException("Jellyfin HTTPS cannot redirect to HTTP.")
+                if (target.username.isNotEmpty() || target.password.isNotEmpty()) throw IOException("Invalid redirect.")
+                request = request.newBuilder().url(target).apply {
+                    if (!sameOrigin) {
+                        removeHeader("Authorization")
+                        removeHeader("X-Emby-Token")
+                    }
+                }.build()
+            }
+            throw IOException("Too many Jellyfin redirects.")
+        }.apply {
+            if (!base.isHttps || insecureLan) {
+                proxy(Proxy.NO_PROXY)
+                dns(object : Dns {
+                    override fun lookup(hostname: String): List<InetAddress> {
+                        val addresses = Dns.SYSTEM.lookup(hostname)
+                        if (!insecureLan && (hostname != base.host || base.isHttps)) return addresses
+                        return addresses.filter { it.isSiteLocalAddress || it.isLoopbackAddress }
+                            .ifEmpty { throw UnknownHostException("Jellyfin cleartext and untrusted TLS require a LAN address.") }
+                    }
+                })
+                addNetworkInterceptor { chain ->
+                    val request = chain.request()
+                    if (!request.url.isHttps && chain.connection()?.route()?.socketAddress?.address?.let {
+                            it.isSiteLocalAddress || it.isLoopbackAddress
+                        } != true) throw IOException("Jellyfin HTTP requires a LAN address.")
+                    chain.proceed(request)
+                }
+            }
+            if (insecureLan) {
+                val trust = object : X509TrustManager {
+                    override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) = Unit
+                    override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) = Unit
+                    override fun getAcceptedIssuers() = emptyArray<X509Certificate>()
+                }
+                sslSocketFactory(SSLContext.getInstance("TLS").apply { init(null, arrayOf(trust), null) }.socketFactory, trust)
+                hostnameVerifier { host, _ -> host == base.host }
+            }
+        }.build()
+
+    suspend fun serverName() = JSONObject(get("System/Info/Public")!!).string("ServerName") ?: "Jellyfin"
+
+    suspend fun detectUserId(): String {
+        val me = get("Users/Me", allowedErrors = setOf(401, 403, 404))
+        me?.let { JSONObject(it).string("Id") }?.let { return it }
+        return JSONArray(get("Users")!!).objects().firstNotNullOfOrNull { it.string("Id") }
+            ?: throw IOException("No Jellyfin user found. Enter a user ID in Settings.")
+    }
+
+    suspend fun liveTvEnabled() = get("LiveTv/Info", allowedErrors = setOf(403, 404))
+        ?.let { JSONObject(it).optBoolean("IsEnabled") } ?: false
+
+    suspend fun channels(userId: String, limit: Int, favorites: Boolean): List<Channel> =
+        channelPage(userId, limit, favorites).items
+
+    suspend fun channelCount(userId: String): Int = channelPage(userId, 1, false).total
+
+    suspend fun guideChannels(userId: String): List<Channel> {
+        val channels = mutableListOf<Channel>()
+        var start = 0
+        do {
+            val page = channelPage(userId, 100, false, start)
+            channels += page.items
+            start += page.received
+        } while (page.received > 0 && start < page.total)
+        return channels.distinctBy(Channel::id)
+    }
+
+    private data class ChannelPage(val items: List<Channel>, val received: Int, val total: Int)
+
+    private suspend fun channelPage(userId: String, limit: Int, favorites: Boolean, start: Int = 0): ChannelPage {
+        val params = linkedMapOf(
+            "UserId" to userId, "AddCurrentProgram" to "true", "EnableImages" to "true",
+            "EnableImageTypes" to "Primary", "Limit" to limit.toString(),
+        )
+        if (favorites) params["IsFavorite"] = "true"
+        if (start != 0) params["StartIndex"] = start.toString()
+        val data = JSONObject(get("LiveTv/Channels", params)!!)
+        val items = data.items().take(limit)
+        val channels = items.mapNotNull { item ->
+            val id = item.string("Id") ?: return@mapNotNull null
+            val name = item.string("Name") ?: return@mapNotNull null
+            val image = item.optJSONObject("ImageTags")?.string("Primary")?.let {
+                url("Items").addPathSegment(id).addPathSegments("Images/Primary")
+                    .addQueryParameter("maxWidth", "240").addQueryParameter("quality", "90").build().toString()
+            }
+            Channel(id, name, item.string("Number") ?: item.string("ChannelNumber"), image, item.optJSONObject("CurrentProgram")?.program())
+        }.distinctBy(Channel::id)
+        return ChannelPage(channels, items.size, data.optInt("TotalRecordCount", items.size))
+    }
+
+    suspend fun upNext(userId: String, channelIds: List<String>, now: Instant = Instant.now()): Map<String, Program> {
+        if (channelIds.isEmpty()) return emptyMap()
+        val query = mapOf(
+            "UserId" to userId, "ChannelIds" to channelIds.joinToString(","),
+            "MaxStartDate" to now.plusSeconds(14_400).toString(), "HasAired" to "false",
+            "SortBy" to "StartDate", "Limit" to "80",
+        )
+        return JSONObject(get("LiveTv/Programs", query)!!).items().mapNotNull { item ->
+            val channel = item.string("ChannelId") ?: return@mapNotNull null
+            val program = item.program()
+            if (program.start == null || program.start <= now) return@mapNotNull null
+            channel to program
+        }.groupBy({ it.first }, { it.second }).mapValues { (_, programs) -> programs.minBy { it.start!! } }
+    }
+
+    private fun url(path: String) = base.newBuilder().apply {
+        if (base.encodedPath.endsWith("/")) removePathSegment(base.pathSegments.lastIndex)
+        addPathSegments(path)
+    }
+
+    private suspend fun get(path: String, query: Map<String, String> = emptyMap(), allowedErrors: Set<Int> = emptySet()): String? {
+        val url = url(path).apply { query.forEach { (key, value) -> addQueryParameter(key, value) } }.build()
+        val request = Request.Builder().url(url).header("Authorization", authorization).build()
+        return suspendCancellableCoroutine { continuation ->
+            val call = client.newCall(request)
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) = continuation.resumeWithException(e)
+                override fun onResponse(call: Call, response: Response) {
+                    val result = runCatching {
+                        response.use {
+                            when {
+                                it.code in allowedErrors -> null
+                                !it.isSuccessful -> throw IOException("Jellyfin returned HTTP ${it.code}.")
+                                else -> {
+                                    val source = it.body?.source() ?: throw IOException("Empty Jellyfin response.")
+                                    if (source.request(4L * 1024 * 1024 + 1)) throw IOException("Jellyfin response is too large.")
+                                    source.readUtf8()
+                                }
+                            }
+                        }
+                    }
+                    continuation.resumeWith(result)
+                }
+            })
+        }
+    }
+
+    private fun HttpUrl.origin() = Triple(scheme, host, port)
+}
