@@ -25,7 +25,7 @@ internal class HomeShelfController(
     private val cards = container.findViewById<RecyclerView>(R.id.homeShelfCards)
     private var shelves = emptyList<HomeShelf>()
     private var selected: HomeShelf? = null
-    private val adapter = HomeShelfAdapter(scope, client) { card ->
+    private val adapter = HomeShelfAdapter(context, scope, client) { card ->
         selected?.takeIf { card in it.data.items }?.let { launchShelfCard(context, it.plugin.packageName, card) }
     }
 
@@ -66,17 +66,43 @@ internal class HomeShelfController(
         val firstCard = cards.layoutManager?.findViewByPosition(0)
         return when {
             keyCode == KeyEvent.KEYCODE_DPAD_LEFT && focus === firstCard ->
-                guide.requestFocus() || next.requestFocus()
-            keyCode == KeyEvent.KEYCODE_DPAD_LEFT && focus === guide -> next.requestFocus()
-            keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && focus === next && guide.requestFocus() -> true
+                focusHeaderAction()
+            keyCode == KeyEvent.KEYCODE_DPAD_LEFT && focus === guide && next.visibility == View.VISIBLE ->
+                next.requestFocus()
+            keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && focus === next && guide.visibility == View.VISIBLE ->
+                guide.requestFocus()
             keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && (focus === next || focus === guide) ->
-                cards.getChildAt(0)?.requestFocus() == true
+                focusFirstCard()
+            else -> false
+        }
+    }
+
+    /**
+     * Handles vertical D-pad traversal between the shelf card strip and shelf header actions
+     * (Full Guide / Next Shelf). Returns false when traversal exits the shelf (Up -> Gallery Mode,
+     * Down -> Dock).
+     */
+    fun moveVertical(keyCode: Int): Boolean {
+        val focus = container.findFocus() ?: return false
+        val inHeader = focus === guide || focus === next
+        return when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP -> if (inHeader) false else focusHeaderAction()
+            KeyEvent.KEYCODE_DPAD_DOWN -> if (inHeader) focusFirstCard() else false
             else -> false
         }
     }
 
     fun requestFocus(): Boolean {
         if (container.visibility != View.VISIBLE) return false
-        return cards.getChildAt(0)?.requestFocus() == true || guide.requestFocus() || next.requestFocus()
+        return focusFirstCard() || focusHeaderAction()
     }
+
+    private fun focusFirstCard(): Boolean {
+        val firstVisible = cards.layoutManager?.findViewByPosition(0) ?: cards.getChildAt(0)
+        return firstVisible?.requestFocus() == true
+    }
+
+    private fun focusHeaderAction(): Boolean =
+        (guide.visibility == View.VISIBLE && guide.requestFocus()) ||
+            (next.visibility == View.VISIBLE && next.requestFocus())
 }

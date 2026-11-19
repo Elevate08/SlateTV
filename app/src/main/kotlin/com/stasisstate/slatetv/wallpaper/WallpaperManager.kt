@@ -91,7 +91,7 @@ class WallpaperManager(
             if (gen != generation.get()) return@launch
 
             if (hydrated != null) {
-                lastMediaId = hydrated.mediaId
+                lastMediaId = hydrated.mediaId.substringBefore('|')
                 _state.value = _state.value.copy(
                     backdrop = hydrated,
                     lastSyncStatus = "Loaded from instant cache",
@@ -295,7 +295,8 @@ class WallpaperManager(
 
     private fun scheduleBackoffRetry() {
         if (!isForeground) return
-        val backoffSeconds = RETRY_BACKOFF_SECONDS.getOrNull(consecutiveFailures - 1) ?: return
+        val backoffSeconds = RETRY_BACKOFF_SECONDS.getOrNull(consecutiveFailures - 1)
+            ?: if (currentSettings.rotationIntervalSeconds <= 0) MANUAL_RETRY_FLOOR_SECONDS else return
         retryJob?.cancel()
         val gen = generation.get()
         retryJob = scope.launch {
@@ -350,5 +351,6 @@ class WallpaperManager(
 
     companion object {
         internal val RETRY_BACKOFF_SECONDS = listOf(3, 8, 20, 60)
+        internal const val MANUAL_RETRY_FLOOR_SECONDS = 120
     }
 }

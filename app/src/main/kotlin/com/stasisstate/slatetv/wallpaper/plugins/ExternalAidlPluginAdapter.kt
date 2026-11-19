@@ -12,12 +12,15 @@ import com.stasisstate.slatetv.plugin.api.ISlateBackgroundPlugin
 import com.stasisstate.slatetv.plugin.api.PluginContract
 import com.stasisstate.slatetv.plugin.api.PluginMetadata
 import com.stasisstate.slatetv.plugin.api.PluginRequestContext
+import com.stasisstate.slatetv.shelf.sanitizeHeaders
+import com.stasisstate.slatetv.shelf.sanitizeImageUri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.util.concurrent.Executors
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -26,11 +29,11 @@ import java.util.concurrent.atomic.AtomicLong
  * Crash-isolated, timeout-enforced AIDL client for external APK plugins.
  *
  * Security & stability boundaries:
- * - Enforces a real deadline on BOTH binding AND the synchronous Binder RPC transaction
- *   using a dedicated daemon thread pool so a stalled plugin can never block `Dispatchers.IO`.
- * - Circuit-breaks a repeatedly stalling plugin for a cooldown window.
- * - Namespaces returned IDs, bounds batch/field lengths, blocks `file://` URIs from external APKs,
- *   and ignores untrusted TLS override requests from external plugins (host controls TLS policy).
+ * - Enforces a real 4s deadline on BOTH binding AND synchronous Binder RPC transactions using a
+ *   bounded thread pool (max 8 threads) so a stalled plugin can never exhaust launcher threads.
+ * - Circuit-breaks a repeatedly stalling plugin for a 30s cooldown window.
+ * - Namespaces returned IDs, sanitizes headers strictly (blocking hop-by-hop headers), blocks
+ *   `file://` URIs, and ignores untrusted TLS overrides (host controls TLS policy).
  */
 class ExternalAidlPluginAdapter(
     private val context: Context,
@@ -61,20 +64,21 @@ class ExternalAidlPluginAdapter(
     private fun sanitizeExternalMedia(raw: BackgroundMedia): BackgroundMedia? {
         val uri = raw.imageUri.trim()
         if (uri.isBlank() || uri.length > MAX_URI_LENGTH) return null
-        // Disallow external plugins from reading arbitrary local file:// paths inside launcher process
-        val allowedScheme = uri.startsWith("https://") ||
-            uri.startsWith("http://") ||
-            uri.startsWith("ambient://") ||
-            uri.startsWith("content://")
-        if (!allowedScheme) return null
+        val safeUri = if (uri.startsWith("ambient://")) {
+            uri
+        } else {
+            sanitizeImageUri(uri, serviceComponent.packageName) ?: return null
+        }
 
-        val safeHeaders = raw.headers.entries
-            .take(MAX_HEADERS)
-            .associate { it.key.take(128) to it.value.take(2048) }
+        val safeHeaders = if (safeUri.startsWith("http://") || safeUri.startsWith("https://")) {
+            sanitizeHeaders(raw.headers.asSequence().map { it.key to it.value })
+        } else {
+            emptyMap()
+        }
 
         return raw.copy(
             id = "${metadata.id}:${raw.id.take(128)}",
-            imageUri = uri,
+            imageUri = safeUri,
             headers = safeHeaders,
             title = raw.title?.take(120),
             subtitle = raw.subtitle?.take(160),
@@ -109,6 +113,10 @@ class ExternalAidlPluginAdapter(
                 override fun onBindingDied(name: ComponentName?) {
                     if (!deferred.isCompleted) deferred.complete(null)
                 }
+
+                override fun onNullBinding(name: ComponentName?) {
+                    if (!deferred.isCompleted) deferred.complete(null)
+                }
             }
 
             val intent = Intent(PluginContract.ACTION_BACKGROUND_PROVIDER).apply {
@@ -119,7 +127,10 @@ class ExternalAidlPluginAdapter(
                 context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
             }.getOrDefault(false)
 
-            if (!bound) return@withContext null
+            if (!bound) {
+                runCatching { context.unbindService(connection) }
+                return@withContext null
+            }
 
             try {
                 val service = withTimeoutOrNull(BIND_TIMEOUT_MS) { deferred.await() }
@@ -128,13 +139,16 @@ class ExternalAidlPluginAdapter(
                         return@withContext null
                     }
 
-                val future = rpcExecutor.submit<T?> {
-                    if (service.apiVersion == PluginContract.API_VERSION) {
-                        block(service)
-                    } else {
-                        null
+                val future = runCatching {
+                    rpcExecutor.submit<T?> {
+                        if (service.apiVersion == PluginContract.API_VERSION) {
+                            block(service)
+                        } else {
+                            null
+                        }
                     }
-                }
+                }.getOrNull() ?: return@withContext null
+
                 try {
                     val result = future.get(RPC_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                     consecutiveTimeouts.set(0)
@@ -158,6 +172,7 @@ class ExternalAidlPluginAdapter(
         val count = consecutiveTimeouts.incrementAndGet()
         if (count >= 2) {
             cooldownUntilMs.set(System.currentTimeMillis() + STALL_COOLDOWN_MS)
+            consecutiveTimeouts.set(0)
         }
     }
 
@@ -166,11 +181,15 @@ class ExternalAidlPluginAdapter(
         private const val RPC_TIMEOUT_MS = 4_000L
         private const val STALL_COOLDOWN_MS = 30_000L
         private const val MAX_BATCH_SIZE = 8
-        private const val MAX_HEADERS = 16
         private const val MAX_URI_LENGTH = 2048
 
-        private val rpcExecutor = Executors.newCachedThreadPool { r ->
-            Thread(r, "slate-aidl-rpc").apply { isDaemon = true }
-        }
+        // Bound stranded Binder RPC threads to max 8 daemon workers
+        private val rpcExecutor = ThreadPoolExecutor(
+            0,
+            8,
+            30L,
+            TimeUnit.SECONDS,
+            SynchronousQueue(),
+        ) { r -> Thread(r, "slate-bg-aidl-rpc").apply { isDaemon = true } }
     }
 }

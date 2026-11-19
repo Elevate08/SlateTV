@@ -19,9 +19,15 @@ import com.stasisstate.slatetv.wallpaper.WallpaperDiskCache
 import com.stasisstate.slatetv.wallpaper.plugins.PluginRegistry
 import com.stasisstate.slatetv.shelf.ShelfPluginRegistry
 import com.stasisstate.slatetv.shelf.launchPluginActivity
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 internal class SettingsDrawerController(
     private val context: Context,
+    private val scope: CoroutineScope,
     private val overlayView: View,
     private val itemsContainer: LinearLayout,
     private val statusSummaryView: TextView,
@@ -38,6 +44,7 @@ internal class SettingsDrawerController(
 ) {
     private var tipJarState: TipJarState = TipJarState()
     private var lastStatus: String = "Ready"
+    private var refreshJob: Job? = null
 
     val isVisible: Boolean
         get() = overlayView.visibility == View.VISIBLE
@@ -51,8 +58,6 @@ internal class SettingsDrawerController(
 
     fun open(lastSyncStatus: String) {
         lastStatus = lastSyncStatus
-        pluginRegistry.refreshExternalPlugins()
-        shelfRegistry.refresh()
         rebuild(lastSyncStatus)
         overlayView.visibility = View.VISIBLE
         overlayView.alpha = 0f
@@ -60,9 +65,21 @@ internal class SettingsDrawerController(
         itemsContainer.post {
             findFirstFocusable(itemsContainer)?.requestFocus()
         }
+        refreshJob?.cancel()
+        refreshJob = scope.launch {
+            withContext(Dispatchers.IO) {
+                pluginRegistry.refreshExternalPlugins()
+                shelfRegistry.refresh()
+            }
+            if (isVisible) {
+                rebuild(lastStatus)
+            }
+        }
     }
 
     fun close() {
+        refreshJob?.cancel()
+        refreshJob = null
         if (!isVisible) return
         overlayView.visibility = View.GONE
         onClosed()

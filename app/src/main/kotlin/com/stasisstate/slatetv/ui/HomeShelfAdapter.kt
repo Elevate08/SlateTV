@@ -1,7 +1,9 @@
 package com.stasisstate.slatetv.ui
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.util.LruCache
 import android.view.LayoutInflater
 import android.view.View
@@ -16,15 +18,24 @@ import com.stasisstate.slatetv.NetworkClientFactory.executeCancellable
 import com.stasisstate.slatetv.R
 import com.stasisstate.slatetv.plugin.api.ShelfCard
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 internal class HomeShelfAdapter(
+    private val context: Context,
     private val scope: CoroutineScope,
     private val client: OkHttpClient,
     private val onClick: (ShelfCard) -> Unit,
@@ -34,7 +45,7 @@ internal class HomeShelfAdapter(
 }) {
     private data class ImageKey(val uri: String, val headers: Map<String, String>)
 
-    private val cache = object : LruCache<ImageKey, Bitmap>(4 * 1024 * 1024) {
+    private val cache = object : LruCache<ImageKey, Bitmap>(8 * 1024 * 1024) {
         override fun sizeOf(key: ImageKey, value: Bitmap) = value.allocationByteCount
     }
 
@@ -75,30 +86,78 @@ internal class HomeShelfAdapter(
 
     private suspend fun loadImage(key: ImageKey): Bitmap? = withContext(Dispatchers.IO) {
         try {
-            val request = Request.Builder().url(key.uri).apply {
-                key.headers.forEach { (name, value) -> header(name, value) }
-            }.build()
-            client.executeCancellable(request).use { response ->
-                val body = response.body ?: return@use null
-                if (!response.isSuccessful || body.contentLength() > MAX_IMAGE_BYTES) return@use null
-                val source = body.source()
-                if (source.request(MAX_IMAGE_BYTES + 1)) return@use null
-                val bytes = source.readByteArray()
-                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
-                if (options.outWidth <= 0 || options.outHeight <= 0) return@use null
-                options.inSampleSize = 1
-                while (maxOf(options.outWidth, options.outHeight) / options.inSampleSize > 256) {
-                    options.inSampleSize *= 2
+            val bytes = if (key.uri.startsWith("content://")) {
+                readContentBytes(key.uri)
+            } else {
+                val request = Request.Builder().url(key.uri).apply {
+                    key.headers.forEach { (name, value) -> header(name, value) }
+                }.build()
+                client.executeCancellable(request).use { response ->
+                    val body = response.body ?: return@use null
+                    if (!response.isSuccessful || body.contentLength() > MAX_IMAGE_BYTES) return@use null
+                    val source = body.source()
+                    if (source.request(MAX_IMAGE_BYTES + 1)) return@use null
+                    source.readByteArray()
                 }
-                options.inJustDecodeBounds = false
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
-            }
+            } ?: return@withContext null
+            decodeDownsampled(bytes)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
             null
         }
+    }
+
+    private suspend fun readContentBytes(uri: String): ByteArray? {
+        val deferred = CompletableDeferred<ByteArray?>()
+        val activeStream = AtomicReference<InputStream?>(null)
+        val future = runCatching {
+            contentExecutor.submit {
+                try {
+                    val parsed = Uri.parse(uri)
+                    val out = context.contentResolver.openInputStream(parsed)?.use { stream ->
+                        activeStream.set(stream)
+                        val buffer = ByteArray(8192)
+                        val bytes = ByteArrayOutputStream()
+                        var total = 0L
+                        while (true) {
+                            val read = stream.read(buffer)
+                            if (read == -1) break
+                            total += read
+                            if (total > MAX_IMAGE_BYTES) return@use null
+                            bytes.write(buffer, 0, read)
+                        }
+                        bytes.toByteArray()
+                    }
+                    deferred.complete(out)
+                } catch (_: Exception) {
+                    deferred.complete(null)
+                } finally {
+                    activeStream.set(null)
+                }
+            }
+        }.getOrNull() ?: return null
+
+        return try {
+            withTimeoutOrNull(CONTENT_URI_TIMEOUT_MS) { deferred.await() }
+        } finally {
+            if (!deferred.isCompleted) {
+                runCatching { activeStream.getAndSet(null)?.close() }
+                future.cancel(true)
+            }
+        }
+    }
+
+    private fun decodeDownsampled(bytes: ByteArray): Bitmap? {
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        if (options.outWidth <= 0 || options.outHeight <= 0) return null
+        options.inSampleSize = 1
+        while (maxOf(options.outWidth, options.outHeight) / options.inSampleSize > 256) {
+            options.inSampleSize *= 2
+        }
+        options.inJustDecodeBounds = false
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
     }
 
     class Holder(view: View) : RecyclerView.ViewHolder(view) {
@@ -112,5 +171,14 @@ internal class HomeShelfAdapter(
 
     private companion object {
         const val MAX_IMAGE_BYTES = 2L * 1024 * 1024
+        const val CONTENT_URI_TIMEOUT_MS = 4_000L
+
+        val contentExecutor = ThreadPoolExecutor(
+            0,
+            4,
+            30L,
+            TimeUnit.SECONDS,
+            SynchronousQueue(),
+        ) { work -> Thread(work, "slate-shelf-content").apply { isDaemon = true } }
     }
 }

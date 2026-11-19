@@ -40,8 +40,10 @@ import com.stasisstate.slatetv.settings.LauncherSettings
 import androidx.lifecycle.lifecycleScope
 import com.stasisstate.slatetv.shelf.ShelfManager
 import com.stasisstate.slatetv.shelf.ShelfPluginRegistry
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Slate TV Home Activity.
@@ -58,7 +60,7 @@ class HomeActivity : AppCompatActivity() {
         get() = application as SlateApplication
 
     private lateinit var backdropRenderer: BackdropRenderer
-    private lateinit var hudContainer: View
+    private lateinit var hudContainer: ViewGroup
     private lateinit var photoCaptionText: TextView
     private lateinit var offlineBadge: TextView
     private lateinit var homeClock: TextClock
@@ -82,6 +84,8 @@ class HomeActivity : AppCompatActivity() {
     private var allInstalledApps: List<AppInfo> = emptyList()
     private var currentSettings: LauncherSettings = LauncherSettings()
     private var isIdleGalleryMode = false
+    private var isContextMenuOpen = false
+    private var skipNextResumeShelfRefresh = false
     private var wallpaperCollectJob: Job? = null
     private var tipJarCollectJob: Job? = null
     private var reloadAppsJob: Job? = null
@@ -91,9 +95,13 @@ class HomeActivity : AppCompatActivity() {
 
     private val packageChangeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            app.pluginRegistry.refreshExternalPlugins()
-            shelfManager.refresh()
-            reloadApps()
+            lifecycleScope.launch {
+                withContext(Dispatchers.IO) {
+                    app.pluginRegistry.refreshExternalPlugins()
+                }
+                shelfManager.refresh()
+                reloadApps()
+            }
         }
     }
 
@@ -166,11 +174,21 @@ class HomeActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        runCatching {
+            val dm = getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+            dm?.registerDisplayListener(displayListener, mainHandler)
+        }
         shelfManager.start()
+        skipNextResumeShelfRefresh = true
     }
 
     override fun onStop() {
+        runCatching {
+            val dm = getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+            dm?.unregisterDisplayListener(displayListener)
+        }
         shelfManager.stop()
+        skipNextResumeShelfRefresh = false
         super.onStop()
     }
 
@@ -179,7 +197,11 @@ class HomeActivity : AppCompatActivity() {
         exitIdleGalleryMode()
         backdropRenderer.ensureVisibleAfterWake()
         app.wallpaperManager.onResume()
-        shelfManager.refresh()
+        if (skipNextResumeShelfRefresh) {
+            skipNextResumeShelfRefresh = false
+        } else {
+            shelfManager.refresh()
+        }
         updateOfflineIndicator()
         ensureValidFocus()
         resetIdleTimer()
@@ -253,6 +275,8 @@ class HomeActivity : AppCompatActivity() {
                         if (!shelfController.hasFocus()) {
                             lastDockFocus = currentFocus
                             if (shelfController.requestFocus()) return true
+                        } else if (shelfController.moveVertical(KeyEvent.KEYCODE_DPAD_UP)) {
+                            return true
                         }
                         enterIdleGalleryMode()
                         return true
@@ -265,7 +289,9 @@ class HomeActivity : AppCompatActivity() {
 
                 KeyEvent.KEYCODE_DPAD_DOWN -> {
                     if (shelfController.hasFocus() && !allAppsController.isVisible && !settingsController.isVisible) {
-                        restoreDockFocus()
+                        if (!shelfController.moveVertical(KeyEvent.KEYCODE_DPAD_DOWN)) {
+                            restoreDockFocus()
+                        }
                         return true
                     }
                 }
@@ -369,6 +395,7 @@ class HomeActivity : AppCompatActivity() {
 
         settingsController = SettingsDrawerController(
             context = this,
+            scope = lifecycleScope,
             overlayView = findViewById(R.id.settingsOverlay),
             itemsContainer = findViewById(R.id.settingsItemsContainer),
             statusSummaryView = findViewById(R.id.settingsStatusSummary),
@@ -406,7 +433,7 @@ class HomeActivity : AppCompatActivity() {
             }
         }
         tipJarCollectJob?.cancel()
-        tipJarCollectJob = app.appScope.launch {
+        tipJarCollectJob = lifecycleScope.launch {
             tipJar.state.collect { state ->
                 if (::settingsController.isInitialized) {
                     settingsController.updateTipJarState(state)
@@ -417,7 +444,7 @@ class HomeActivity : AppCompatActivity() {
 
     private fun observeWallpaperState() {
         wallpaperCollectJob?.cancel()
-        wallpaperCollectJob = app.appScope.launch {
+        wallpaperCollectJob = lifecycleScope.launch {
             app.wallpaperManager.state.collect { uiState ->
                 uiState.backdrop?.let { backdrop ->
                     backdropRenderer.render(backdrop, animate = true)
@@ -449,7 +476,7 @@ class HomeActivity : AppCompatActivity() {
 
     private fun reloadApps() {
         reloadAppsJob?.cancel()
-        reloadAppsJob = app.appScope.launch {
+        reloadAppsJob = lifecycleScope.launch {
             val loaded = app.appRepository.loadInstalledApps(currentSettings.showSideloadedApps)
             if (isDestroyed || isFinishing) return@launch
             allInstalledApps = loaded
@@ -558,27 +585,48 @@ class HomeActivity : AppCompatActivity() {
         }
 
         dlg.setContentView(root)
+        isContextMenuOpen = true
+        mainHandler.removeCallbacks(enterIdleRunnable)
+        dlg.setOnDismissListener {
+            isContextMenuOpen = false
+            resetIdleTimer()
+        }
         dlg.show()
         firstOption?.requestFocus()
     }
 
     private fun enterIdleGalleryMode() {
-        if (isIdleGalleryMode || allAppsController.isVisible || settingsController.isVisible) return
+        if (isIdleGalleryMode || isContextMenuOpen || allAppsController.isVisible || settingsController.isVisible) return
         isIdleGalleryMode = true
-        hudContainer.animate().alpha(0f).setDuration(420L).start()
+        hudContainer.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        hudContainer.clearFocus()
+        hudContainer.animate()
+            .alpha(0f)
+            .setDuration(420L)
+            .withEndAction {
+                if (isIdleGalleryMode) {
+                    hudContainer.visibility = View.INVISIBLE
+                }
+            }
+            .start()
     }
 
     private fun exitIdleGalleryMode() {
-        if (!isIdleGalleryMode && hudContainer.alpha >= 0.99f) return
+        if (!isIdleGalleryMode && hudContainer.alpha >= 0.99f && hudContainer.visibility == View.VISIBLE) return
         isIdleGalleryMode = false
         hudContainer.animate().cancel()
+        hudContainer.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        if (!allAppsController.isVisible && !settingsController.isVisible) {
+            hudContainer.visibility = View.VISIBLE
+        }
         hudContainer.animate().alpha(1f).setDuration(180L).start()
+        ensureValidFocus()
     }
 
     private fun resetIdleTimer() {
         mainHandler.removeCallbacks(enterIdleRunnable)
         val idleSec = currentSettings.idleGallerySeconds
-        if (idleSec > 0 && !allAppsController.isVisible && !settingsController.isVisible) {
+        if (idleSec > 0 && !isContextMenuOpen && !allAppsController.isVisible && !settingsController.isVisible) {
             mainHandler.postDelayed(enterIdleRunnable, idleSec * 1_000L)
         }
     }
@@ -593,7 +641,7 @@ class HomeActivity : AppCompatActivity() {
             currentFocus = currentFocus,
             dockRecyclerView = dockRecyclerView,
             fallbackFocusView = btnAllApps,
-            isOverlayOpen = allAppsController.isVisible || settingsController.isVisible,
+            isOverlayOpen = allAppsController.isVisible || settingsController.isVisible || isIdleGalleryMode,
         )
     }
 
@@ -618,10 +666,6 @@ class HomeActivity : AppCompatActivity() {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             cm?.registerDefaultNetworkCallback(networkCallback)
         }
-        runCatching {
-            val dm = getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
-            dm?.registerDisplayListener(displayListener, mainHandler)
-        }
     }
 
     private fun unregisterSystemObservers() {
@@ -629,10 +673,6 @@ class HomeActivity : AppCompatActivity() {
         runCatching {
             val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             cm?.unregisterNetworkCallback(networkCallback)
-        }
-        runCatching {
-            val dm = getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
-            dm?.unregisterDisplayListener(displayListener)
         }
     }
 

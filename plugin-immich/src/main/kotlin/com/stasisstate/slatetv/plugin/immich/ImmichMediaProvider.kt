@@ -15,7 +15,7 @@ import java.io.IOException
 import java.util.UUID
 
 private const val AUTHORITY = "$IMMICH_PACKAGE.media"
-private const val MAX_FILE_BYTES = 24L * 1024 * 1024
+private const val MAX_FILE_BYTES = 16L * 1024 * 1024
 private const val MAX_CACHE_BYTES = 5 * MAX_FILE_BYTES
 private const val MAX_CACHE_FILES = 24
 private val mediaName = Regex("[0-9a-f-]{36}")
@@ -23,8 +23,9 @@ private fun directory(context: Context) = File(context.cacheDir, "immich-media")
 private fun mediaUri(name: String) = Uri.Builder().scheme("content").authority(AUTHORITY).appendPath(name).build()
 
 internal class ImmichMediaCache(private val context: Context, private val api: ImmichApiClient) {
-    // Called while holding ImmichRuntime.mutex.
-    fun publish(config: ImmichConfig, media: BackgroundMedia, packages: Array<out String>): Uri {
+    private val cacheLock = Any()
+
+    fun publish(config: ImmichConfig, media: BackgroundMedia, grantPackages: Iterable<String>): Uri = synchronized(cacheLock) {
         val folder = directory(context)
         if (!folder.isDirectory && !folder.mkdirs()) throw IOException("Cannot create media cache")
         val cached = folder.listFiles().orEmpty().filter { mediaName.matches(it.name) }
@@ -41,8 +42,8 @@ internal class ImmichMediaCache(private val context: Context, private val api: I
         val request = Request.Builder().url(media.imageUri).apply {
             media.headers.forEach { (name, value) -> header(name, value) }
         }.build()
-        val file = File(folder, ".download")
         val name = UUID.randomUUID().toString()
+        val file = File(folder, ".download-$name")
         try {
             api.clientFor(config).newCall(request).execute().use { response ->
                 val body = response.body
@@ -65,8 +66,8 @@ internal class ImmichMediaCache(private val context: Context, private val api: I
                 }
             }
             if (!file.renameTo(File(folder, name))) throw IOException("Cannot publish cached media")
-            return mediaUri(name).also { uri ->
-                packages.forEach { context.grantUriPermission(it, uri, FLAG_GRANT_READ_URI_PERMISSION) }
+            mediaUri(name).also { uri ->
+                grantPackages.forEach { context.grantUriPermission(it, uri, FLAG_GRANT_READ_URI_PERMISSION) }
             }
         } finally {
             file.delete()

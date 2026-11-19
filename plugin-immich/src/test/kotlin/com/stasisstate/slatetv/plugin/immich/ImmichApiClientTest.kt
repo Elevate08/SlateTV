@@ -265,9 +265,18 @@ class ImmichApiClientTest {
 
         lanServer.use { srv ->
             val startedUrl = srv.start()
-            assertTrue(startedUrl.contains("pin=${srv.pin}"))
+            assertFalse("QR URL must not embed the PIN query param", startedUrl.contains("pin="))
             val baseUrl = "http://127.0.0.1:${srv.boundPort}"
             val http = OkHttpClient()
+
+            // Missing Host header is rejected with 400 Bad Request
+            java.net.Socket("127.0.0.1", srv.boundPort).use { rawSocket ->
+                rawSocket.soTimeout = 2_000
+                rawSocket.getOutputStream().write("GET / HTTP/1.1\r\n\r\n".toByteArray())
+                rawSocket.getOutputStream().flush()
+                val statusLine = rawSocket.getInputStream().bufferedReader().readLine()
+                assertTrue("Expected 400 without Host header, got: $statusLine", statusLine.contains("400"))
+            }
 
             // First valid submission succeeds (200)
             val goodReq = Request.Builder()
@@ -339,5 +348,12 @@ class ImmichApiClientTest {
         assertEquals("immich:preview:a1", first!!.id)
         assertEquals("immich:preview:a2", second!!.id)
         assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `buildAssetImageUrl URL-encodes asset IDs to prevent path traversal`() {
+        val url = client.buildAssetImageUrl(baseConfig(), "../admin/secret")
+        assertTrue("Expected encoded slash in $url", url.contains("%2F"))
+        assertFalse("Raw traversal must not appear in $url", url.contains("/../"))
     }
 }

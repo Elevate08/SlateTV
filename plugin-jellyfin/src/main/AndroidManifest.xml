@@ -29,5 +29,9 @@
             <meta-data android:name="com.stasisstate.slatetv.plugin.GUIDE_ACTIVITY" android:value="com.stasisstate.slatetv.plugin.jellyfin.JellyfinGuideActivity" />
             <meta-data android:name="com.stasisstate.slatetv.plugin.API_VERSION" android:value="1" />
         </service>
+        <provider android:name=".JellyfinMediaProvider"
+            android:authorities="com.stasisstate.slatetv.plugin.jellyfin.media"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

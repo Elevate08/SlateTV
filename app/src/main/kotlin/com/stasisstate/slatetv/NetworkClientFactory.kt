@@ -1,6 +1,5 @@
 package com.stasisstate.slatetv
 
-import android.annotation.SuppressLint
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
@@ -8,12 +7,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import java.io.IOException
-import java.security.SecureRandom
-import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLContext
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 import kotlin.coroutines.resumeWithException
 
 object NetworkClientFactory {
@@ -34,16 +28,12 @@ object NetworkClientFactory {
     }
 
     /**
-     * Builds an OkHttpClient that strips caller-supplied headers
-     * on any cross-origin HTTP redirect so credentials can never leak to third-party hosts.
+     * Builds the host OkHttpClient with strict system TLS verification and origin-bound redirects:
+     * any redirect changing scheme, host, or port strips all caller-supplied headers so tokens
+     * can never leak to third-party origins, and HTTP 303 switches to GET per RFC 9110.
      */
-    @SuppressLint("CustomX509TrustManager", "TrustAllX509TrustManager")
-    fun defaultClient(
-        allowUntrustedTls: Boolean,
-        allowedHost: String? = null,
-        baseClient: OkHttpClient? = null,
-    ): OkHttpClient {
-        val builder = (baseClient?.newBuilder() ?: OkHttpClient.Builder())
+    fun defaultClient(): OkHttpClient {
+        return OkHttpClient.Builder()
             .connectTimeout(6, TimeUnit.SECONDS)
             .readTimeout(12, TimeUnit.SECONDS)
             .writeTimeout(10, TimeUnit.SECONDS)
@@ -61,8 +51,12 @@ object NetworkClientFactory {
                     val sameOrigin = nextUrl.scheme == original.url.scheme &&
                         nextUrl.host.equals(original.url.host, ignoreCase = true) &&
                         nextUrl.port == original.url.port
+                    val code = response.code
                     response.close()
                     val nextBuilder = currentReq.newBuilder().url(nextUrl)
+                    if (code == 303 && currentReq.method != "GET" && currentReq.method != "HEAD") {
+                        nextBuilder.method("GET", null)
+                    }
                     if (!sameOrigin) {
                         currentReq.headers.names().forEach(nextBuilder::removeHeader)
                     }
@@ -72,21 +66,6 @@ object NetworkClientFactory {
                 }
                 response
             }
-
-        if (allowUntrustedTls) {
-            val trustAll = object : X509TrustManager {
-                override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-                override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-                override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-            }
-            val sslContext = SSLContext.getInstance("TLS")
-            sslContext.init(null, arrayOf<TrustManager>(trustAll), SecureRandom())
-            builder.sslSocketFactory(sslContext.socketFactory, trustAll)
-            builder.hostnameVerifier { hostname, _ ->
-                // Restrict hostname bypass strictly to the explicitly configured host
-                allowedHost != null && hostname.equals(allowedHost, ignoreCase = true)
-            }
-        }
-        return builder.build()
+            .build()
     }
 }

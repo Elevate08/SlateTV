@@ -7,6 +7,8 @@ import com.stasisstate.slatetv.plugin.api.BackgroundPlugin
 import com.stasisstate.slatetv.plugin.api.PluginMetadata
 import com.stasisstate.slatetv.plugin.api.PluginRequestContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -16,6 +18,7 @@ import java.io.File
  */
 class LocalFolderPlugin(private val context: Context) : BackgroundPlugin {
 
+    private val mutex = Mutex()
     private var shuffledFiles: List<File> = emptyList()
     private var cursor = 0
 
@@ -36,12 +39,14 @@ class LocalFolderPlugin(private val context: Context) : BackgroundPlugin {
 
     override suspend fun fetchNext(request: PluginRequestContext): BackgroundMedia? =
         withContext(Dispatchers.IO) {
-            if (shuffledFiles.isEmpty() || cursor >= shuffledFiles.size) {
-                shuffledFiles = scanImages().shuffled()
-                cursor = 0
-            }
-            if (shuffledFiles.isEmpty()) return@withContext null
-            val file = shuffledFiles[cursor++]
+            val file = mutex.withLock {
+                if (shuffledFiles.isEmpty() || cursor >= shuffledFiles.size) {
+                    shuffledFiles = scanImages().shuffled()
+                    cursor = 0
+                }
+                if (shuffledFiles.isEmpty()) null else shuffledFiles[cursor++]
+            } ?: return@withContext null
+
             BackgroundMedia(
                 id = "local:${file.name}:${file.lastModified()}",
                 imageUri = file.toURI().toString(),

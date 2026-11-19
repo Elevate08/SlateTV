@@ -7,6 +7,7 @@ import com.stasisstate.slatetv.plugin.api.ShelfPayload
 import com.stasisstate.slatetv.plugin.api.ShelfPlugin
 import com.stasisstate.slatetv.plugin.api.ShelfPluginMetadata
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -56,7 +57,34 @@ class ShelfHostingTest {
         assertEquals(-1, card.progressPercent)
         assertEquals("https://tv.example/logo", sanitizeImageUri("https://tv.example/logo"))
         assertNull(sanitizeImageUri("https://user:secret@tv.example/logo"))
+        assertEquals(
+            "content://example.tv.media/abc123",
+            sanitizeImageUri("content://example.tv.media/abc123", "example.tv"),
+        )
+        assertNull(sanitizeImageUri("content://other.app.media/abc123", "example.tv"))
+        assertNull(sanitizeImageUri("content://example.tv.media/sub/path", "example.tv"))
+        assertNull(sanitizeImageUri("content://example.tv.media/..%2Fsecret", "example.tv"))
+        assertNull(sanitizeImageUri("content://example.tv.media/abc?foo=bar", "example.tv"))
         assertTrue(sanitizePayload(ShelfPayload(false, "", cards), provider.metadata).items.isEmpty())
+
+        // Strict launchUri scheme allowlist & content:// header stripping
+        val allowed = ShelfItem(
+            id = "ok",
+            title = "Channel",
+            imageUri = "content://example.tv.media/logo01",
+            imageHeaders = android.os.Bundle(),
+            launchUri = "jellyfin://channel/1",
+        )
+        val blocked = ShelfItem(
+            id = "bad",
+            title = "Bad Scheme",
+            launchUri = "tel:5551234",
+        )
+        val checked = sanitizePayload(ShelfPayload(true, "TV", listOf(allowed, blocked)), provider.metadata)
+        assertEquals("content://example.tv.media/logo01", checked.items[0].imageUri)
+        assertEquals(emptyMap<String, String>(), checked.items[0].imageHeaders)
+        assertEquals("jellyfin://channel/1", checked.items[0].launchUri)
+        assertNull(checked.items[1].launchUri)
     }
 
     @Test
@@ -84,6 +112,7 @@ class ShelfHostingTest {
         val manager = ShelfManager(
             backgroundScope,
             ShelfPluginRegistry { listOf(enabled, disabled, empty, unavailable, failing) },
+            ioDispatcher = StandardTestDispatcher(testScheduler),
         ) { disabledIds }
 
         manager.start()
@@ -105,6 +134,47 @@ class ShelfHostingTest {
         advanceTimeBy(120_000)
         runCurrent()
         assertEquals(1, disabled.calls)
+    }
+
+    @Test
+    fun transientFailuresPreserveLastGoodShelfUpToTwoCyclesWhileUnavailableHidesImmediately() = runTest {
+        val flaky = Provider("flaky")
+        val manager = ShelfManager(
+            backgroundScope,
+            ShelfPluginRegistry { listOf(flaky) },
+            ioDispatcher = StandardTestDispatcher(testScheduler),
+        ) { emptySet() }
+
+        manager.start()
+        runCurrent()
+        assertEquals(listOf("flaky"), manager.shelves.value.map { it.plugin.id })
+
+        // First & second transient failures preserve the last good shelf
+        flaky.fail = true
+        manager.refresh()
+        runCurrent()
+        assertEquals(listOf("flaky"), manager.shelves.value.map { it.plugin.id })
+
+        manager.refresh()
+        runCurrent()
+        assertEquals(listOf("flaky"), manager.shelves.value.map { it.plugin.id })
+
+        // Third consecutive transient failure clears the stale shelf
+        manager.refresh()
+        runCurrent()
+        assertTrue(manager.shelves.value.isEmpty())
+
+        // Recovery restores shelf, then explicit available=false hides it immediately
+        flaky.fail = false
+        manager.refresh()
+        runCurrent()
+        assertEquals(listOf("flaky"), manager.shelves.value.map { it.plugin.id })
+
+        flaky.result = flaky.result.copy(available = false, items = emptyList())
+        manager.refresh()
+        runCurrent()
+        assertTrue(manager.shelves.value.isEmpty())
+        manager.stop()
     }
 
     private class Provider(id: String) : ShelfPlugin {

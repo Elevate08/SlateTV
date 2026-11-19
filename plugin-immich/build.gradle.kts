@@ -31,6 +31,16 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
+
+        val pinnedHostSha256 = providers.gradleProperty("trustedSlateCertSha256").orNull.orEmpty()
+            .replace(":", "")
+            .trim()
+            .lowercase()
+        buildConfigField("String", "TRUSTED_SLATE_CERT_SHA256", "\"$pinnedHostSha256\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     signingConfigs {
@@ -49,6 +59,7 @@ android {
         release {
             if (releaseSigningReady) signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

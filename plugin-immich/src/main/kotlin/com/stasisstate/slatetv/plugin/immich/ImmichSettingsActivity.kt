@@ -21,12 +21,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 class ImmichSettingsActivity : Activity() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val store by lazy { SharedPrefsImmichConfigStore(this) }
+    private val store by lazy { SharedPrefsImmichConfigStore(applicationContext) }
     private val api = ImmichApiClient()
     private lateinit var draft: ImmichConfig
     private lateinit var status: TextView
@@ -40,13 +39,11 @@ class ImmichSettingsActivity : Activity() {
     private lateinit var tlsButton: Button
     private var pairDialog: AlertDialog? = null
     private var pairServer: LanConfigServer? = null
-    private var autoPair = false
     private var loadingAlbums = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         draft = store.load()
-        autoPair = savedInstanceState == null && !draft.isConfigured
         val rows = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
@@ -109,14 +106,6 @@ class ImmichSettingsActivity : Activity() {
         rows.button("Save") { save(draft) }
         refresh()
         pairButton.requestFocus()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        if (autoPair) {
-            autoPair = false
-            showPairing()
-        }
     }
 
     override fun onPause() {
@@ -236,10 +225,8 @@ class ImmichSettingsActivity : Activity() {
         scope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    ImmichRuntime.mutex.withLock {
-                        store.save(config)
-                        ImmichRuntime.plugin(store).invalidateQueue()
-                    }
+                    store.save(config)
+                    ImmichRuntime.invalidateAll()
                 }
                 if (config == draft) showStatus("Settings saved.", true)
             } catch (e: CancellationException) {

@@ -79,16 +79,40 @@ class ImmichBackgroundPlugin(
         val config = configStore.load()
         if (!config.isConfigured) return emptyList()
 
-        val result = mutableListOf<BackgroundMedia>()
-        var lastId = request.lastMediaId
-        repeat(count.coerceIn(1, 5)) {
-            val next = fetchNext(request.copy(lastMediaId = lastId)) ?: return@repeat
-            if (result.none { it.id == next.id }) {
-                result += next
-                lastId = next.id
+        val target = count.coerceIn(1, 5)
+        val assets = queueMutex.withLock {
+            val fingerprint = config.hashCode()
+            if (fingerprint != lastConfigFingerprint) {
+                pendingQueue.clear()
+                apiClient.resetPagination()
+                lastConfigFingerprint = fingerprint
             }
+            if (pendingQueue.isEmpty()) {
+                val fetched = try {
+                    apiClient.fetchCandidateAssets(config, batchSize = DEFAULT_BATCH_SIZE)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    emptyList()
+                }
+                pendingQueue.addAll(fetched)
+            }
+            val taken = mutableListOf<ImmichAsset>()
+            val seenIds = mutableSetOf<String>()
+            val prevAssetId = request.lastMediaId?.substringAfterLast(':')
+            while (taken.size < target && pendingQueue.isNotEmpty()) {
+                var candidate = pendingQueue.removeFirst()
+                if (taken.isEmpty() && candidate.id == prevAssetId && pendingQueue.isNotEmpty()) {
+                    pendingQueue.addLast(candidate)
+                    candidate = pendingQueue.removeFirst()
+                }
+                if (seenIds.add(candidate.id)) {
+                    taken += candidate
+                }
+            }
+            taken
         }
-        return result
+        return assets.map { toBackgroundMedia(config, it) }
     }
 
     private fun toBackgroundMedia(config: ImmichConfig, asset: ImmichAsset): BackgroundMedia {

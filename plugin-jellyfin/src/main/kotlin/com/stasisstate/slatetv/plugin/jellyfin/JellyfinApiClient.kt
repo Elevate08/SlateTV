@@ -2,6 +2,7 @@ package com.stasisstate.slatetv.plugin.jellyfin
 
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.*
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -43,7 +44,28 @@ data class Program(
     }
 }
 
-data class Channel(val id: String, val name: String, val number: String?, val imageUri: String?, val current: Program?)
+data class Channel(
+    val id: String,
+    val name: String,
+    val number: String?,
+    val imageUri: String?,
+    val current: Program?,
+    val imageTag: String? = null,
+)
+
+internal fun InetAddress.isLanOrTailscale(): Boolean {
+    if (isSiteLocalAddress || isLoopbackAddress || isLinkLocalAddress) return true
+    val bytes = address
+    // Tailscale / CGNAT private mesh range: 100.64.0.0/10
+    if (bytes.size == 4 && (bytes[0].toInt() and 0xFF) == 100 && (bytes[1].toInt() and 0xC0) == 64) {
+        return true
+    }
+    // IPv6 Unique Local Address (ULA): fc00::/7
+    if (bytes.size == 16 && (bytes[0].toInt() and 0xFE) == 0xFC) {
+        return true
+    }
+    return false
+}
 
 private fun JSONObject.string(key: String) = if (isNull(key)) null else optString(key).trim().ifEmpty { null }
 private fun JSONObject.instant(key: String) = string(key)?.let {
@@ -75,12 +97,16 @@ class JellyfinApiClient(private val config: JellyfinConfig) {
                 if (response.code !in setOf(301, 302, 303, 307, 308) || target == null) {
                     return@addInterceptor response
                 }
+                val code = response.code
                 response.close()
                 val sameOrigin = request.url.origin() == target.origin()
                 if (insecureLan && !sameOrigin) throw IOException("LAN TLS redirects must stay on the configured origin.")
                 if (request.url.isHttps && !target.isHttps) throw IOException("Jellyfin HTTPS cannot redirect to HTTP.")
                 if (target.username.isNotEmpty() || target.password.isNotEmpty()) throw IOException("Invalid redirect.")
                 request = request.newBuilder().url(target).apply {
+                    if (code == 303 && request.method != "GET" && request.method != "HEAD") {
+                        method("GET", null)
+                    }
                     if (!sameOrigin) {
                         removeHeader("Authorization")
                         removeHeader("X-Emby-Token")
@@ -95,15 +121,15 @@ class JellyfinApiClient(private val config: JellyfinConfig) {
                     override fun lookup(hostname: String): List<InetAddress> {
                         val addresses = Dns.SYSTEM.lookup(hostname)
                         if (!insecureLan && (hostname != base.host || base.isHttps)) return addresses
-                        return addresses.filter { it.isSiteLocalAddress || it.isLoopbackAddress }
-                            .ifEmpty { throw UnknownHostException("Jellyfin cleartext and untrusted TLS require a LAN address.") }
+                        return addresses.filter { it.isLanOrTailscale() }
+                            .ifEmpty { throw UnknownHostException("Jellyfin cleartext and untrusted TLS require a LAN or private mesh address.") }
                     }
                 })
                 addNetworkInterceptor { chain ->
                     val request = chain.request()
-                    if (!request.url.isHttps && chain.connection()?.route()?.socketAddress?.address?.let {
-                            it.isSiteLocalAddress || it.isLoopbackAddress
-                        } != true) throw IOException("Jellyfin HTTP requires a LAN address.")
+                    if (!request.url.isHttps && chain.connection()?.route()?.socketAddress?.address?.isLanOrTailscale() != true) {
+                        throw IOException("Jellyfin HTTP requires a LAN or private mesh address.")
+                    }
                     chain.proceed(request)
                 }
             }
@@ -121,7 +147,7 @@ class JellyfinApiClient(private val config: JellyfinConfig) {
     suspend fun serverName() = JSONObject(get("System/Info/Public")!!).string("ServerName") ?: "Jellyfin"
 
     suspend fun detectUserId(): String {
-        val me = get("Users/Me", allowedErrors = setOf(401, 403, 404))
+        val me = get("Users/Me", allowedErrors = setOf(400, 401, 403, 404))
         me?.let { JSONObject(it).string("Id") }?.let { return it }
         return JSONArray(get("Users")!!).objects().firstNotNullOfOrNull { it.string("Id") }
             ?: throw IOException("No Jellyfin user found. Enter a user ID in Settings.")
@@ -146,9 +172,9 @@ class JellyfinApiClient(private val config: JellyfinConfig) {
         return channels.distinctBy(Channel::id)
     }
 
-    private data class ChannelPage(val items: List<Channel>, val received: Int, val total: Int)
+    internal data class ChannelPage(val items: List<Channel>, val received: Int, val total: Int)
 
-    private suspend fun channelPage(userId: String, limit: Int, favorites: Boolean, start: Int = 0): ChannelPage {
+    internal suspend fun channelPage(userId: String, limit: Int, favorites: Boolean, start: Int = 0): ChannelPage {
         val params = linkedMapOf(
             "UserId" to userId, "AddCurrentProgram" to "true", "EnableImages" to "true",
             "EnableImageTypes" to "Primary", "Limit" to limit.toString(),
@@ -160,21 +186,30 @@ class JellyfinApiClient(private val config: JellyfinConfig) {
         val channels = items.mapNotNull { item ->
             val id = item.string("Id") ?: return@mapNotNull null
             val name = item.string("Name") ?: return@mapNotNull null
-            val image = item.optJSONObject("ImageTags")?.string("Primary")?.let {
+            val primaryTag = item.optJSONObject("ImageTags")?.string("Primary")
+            val image = primaryTag?.let {
                 url("Items").addPathSegment(id).addPathSegments("Images/Primary")
                     .addQueryParameter("maxWidth", "240").addQueryParameter("quality", "90").build().toString()
             }
-            Channel(id, name, item.string("Number") ?: item.string("ChannelNumber"), image, item.optJSONObject("CurrentProgram")?.program())
+            Channel(
+                id = id,
+                name = name,
+                number = item.string("Number") ?: item.string("ChannelNumber"),
+                imageUri = image,
+                current = item.optJSONObject("CurrentProgram")?.program(),
+                imageTag = primaryTag,
+            )
         }.distinctBy(Channel::id)
         return ChannelPage(channels, items.size, data.optInt("TotalRecordCount", items.size))
     }
 
     suspend fun upNext(userId: String, channelIds: List<String>, now: Instant = Instant.now()): Map<String, Program> {
         if (channelIds.isEmpty()) return emptyMap()
+        val limit = (channelIds.size * 4).coerceAtLeast(80)
         val query = mapOf(
             "UserId" to userId, "ChannelIds" to channelIds.joinToString(","),
             "MaxStartDate" to now.plusSeconds(14_400).toString(), "HasAired" to "false",
-            "SortBy" to "StartDate", "Limit" to "80",
+            "SortBy" to "StartDate", "Limit" to limit.toString(),
         )
         return JSONObject(get("LiveTv/Programs", query)!!).items().mapNotNull { item ->
             val channel = item.string("ChannelId") ?: return@mapNotNull null
@@ -182,6 +217,42 @@ class JellyfinApiClient(private val config: JellyfinConfig) {
             if (program.start == null || program.start <= now) return@mapNotNull null
             channel to program
         }.groupBy({ it.first }, { it.second }).mapValues { (_, programs) -> programs.minBy { it.start!! } }
+    }
+
+    internal suspend fun downloadImageBytes(imageUrl: String, maxBytes: Long): ByteArray? {
+        val parsed = imageUrl.toHttpUrlOrNull() ?: return null
+        if (parsed.origin() != base.origin()) return null
+        val request = Request.Builder()
+            .url(parsed)
+            .header("Authorization", authorization)
+            .header("Accept", "image/*")
+            .build()
+        return suspendCancellableCoroutine { continuation ->
+            val call = client.newCall(request)
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (continuation.isActive) continuation.resumeWith(Result.success(null))
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    val result = runCatching {
+                        response.use { resp ->
+                            val body = resp.body ?: return@use null
+                            if (!resp.isSuccessful || body.contentType()?.type != "image" ||
+                                body.contentLength() > maxBytes
+                            ) {
+                                return@use null
+                            }
+                            val source = body.source()
+                            if (source.request(maxBytes + 1)) return@use null
+                            source.readByteArray()
+                        }
+                    }.getOrNull()
+                    if (continuation.isActive) continuation.resumeWith(Result.success(result))
+                }
+            })
+        }
     }
 
     private fun url(path: String) = base.newBuilder().apply {

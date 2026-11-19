@@ -33,7 +33,7 @@ class JellyfinSettingsActivity : JellyfinTvActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        store = JellyfinConfigStore(this)
+        store = JellyfinConfigStore(applicationContext)
         val config = store.load()
         maxChannels = config.maxHomeChannels
         tap = config.cardTapAction
@@ -147,13 +147,17 @@ class JellyfinSettingsActivity : JellyfinTvActivity() {
     private fun showPairing() {
         stopPairing()
         val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val address = manager.allNetworks.asSequence().filter { network ->
+        val lanCandidates = manager.allNetworks.asSequence().filter { network ->
             manager.getNetworkCapabilities(network)?.let {
                 it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
-                    it.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+                    it.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+                    it.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
             } == true
         }.flatMap { manager.getLinkProperties(it)?.linkAddresses.orEmpty().asSequence() }
-            .mapNotNull { it.address as? Inet4Address }.firstOrNull { it.isSiteLocalAddress }
+            .mapNotNull { it.address as? Inet4Address }
+            .filter { !it.isLoopbackAddress && it.isLanOrTailscale() }
+            .toList()
+        val address = lanCandidates.firstOrNull { it.isSiteLocalAddress } ?: lanCandidates.firstOrNull()
         if (address == null) {
             status.text = "Connect your TV to a local Wi-Fi or Ethernet network to pair."
             return

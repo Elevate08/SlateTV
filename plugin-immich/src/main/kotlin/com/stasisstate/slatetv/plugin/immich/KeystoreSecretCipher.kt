@@ -5,6 +5,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import java.nio.charset.StandardCharsets
 import java.security.KeyStore
+import java.security.Security
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -21,19 +22,24 @@ object KeystoreSecretCipher {
     private const val IV_BYTES = 12
     private const val TAG_BITS = 128
 
+    @Volatile
+    private var cachedKey: SecretKey? = null
+
     fun encrypt(plaintext: String): String {
         if (plaintext.isBlank()) return ""
-        return runCatching {
-            val key = getOrCreateKey()
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.ENCRYPT_MODE, key)
-            val iv = cipher.iv
-            val encrypted = cipher.doFinal(plaintext.toByteArray(StandardCharsets.UTF_8))
-            val combined = ByteArray(iv.size + encrypted.size)
-            System.arraycopy(iv, 0, combined, 0, iv.size)
-            System.arraycopy(encrypted, 0, combined, iv.size, encrypted.size)
-            PREFIX + Base64.encodeToString(combined, Base64.NO_WRAP)
-        }.getOrElse { plaintext }
+        if (Security.getProvider(ANDROID_KEYSTORE) == null) {
+            // Non-Android JVM unit test environment where AndroidKeyStore does not exist
+            return plaintext
+        }
+        val key = getOrCreateKey()
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, key)
+        val iv = cipher.iv
+        val encrypted = cipher.doFinal(plaintext.toByteArray(StandardCharsets.UTF_8))
+        val combined = ByteArray(iv.size + encrypted.size)
+        System.arraycopy(iv, 0, combined, 0, iv.size)
+        System.arraycopy(encrypted, 0, combined, iv.size, encrypted.size)
+        return PREFIX + Base64.encodeToString(combined, Base64.NO_WRAP)
     }
 
     fun decrypt(stored: String): String {
@@ -51,9 +57,14 @@ object KeystoreSecretCipher {
         }.getOrDefault("")
     }
 
+    @Synchronized
     private fun getOrCreateKey(): SecretKey {
+        cachedKey?.let { return it }
         val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let {
+            cachedKey = it
+            return it
+        }
 
         val keyGen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
         val spec = KeyGenParameterSpec.Builder(
@@ -65,6 +76,6 @@ object KeystoreSecretCipher {
             .setKeySize(256)
             .build()
         keyGen.init(spec)
-        return keyGen.generateKey()
+        return keyGen.generateKey().also { cachedKey = it }
     }
 }

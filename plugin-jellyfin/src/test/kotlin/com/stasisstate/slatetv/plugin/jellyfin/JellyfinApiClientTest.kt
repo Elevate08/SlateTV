@@ -169,4 +169,46 @@ class JellyfinApiClientTest {
             assertEquals("1", server.takeRequest().requestUrl!!.queryParameter("Limit"))
         }
     }
+
+    @Test fun autoDetectAlsoFallsBackOnHttp400() = MockWebServer().use { server ->
+        runBlocking {
+            server.json("bad request", 400)
+            server.json("""[{"Id":"server-key-user"}]""")
+            assertEquals("server-key-user", server.client().detectUserId())
+        }
+    }
+
+    @Test fun upNextScalesLimitProportionallyForLargeChannelBatches() = MockWebServer().use { server ->
+        runBlocking {
+            server.json("""{"Items":[]}""")
+            val ids = (1..30).map { "ch-$it" }
+            server.client().upNext("user", ids, now)
+            assertEquals("120", server.takeRequest().requestUrl!!.queryParameter("Limit"))
+        }
+    }
+
+    @Test fun lanAndTailscaleFilterAllowsPrivateAndMeshAddressesAndBlocksPublicIps() {
+        assertTrue(InetAddress.getByName("192.168.1.50").isLanOrTailscale())
+        assertTrue(InetAddress.getByName("10.0.0.10").isLanOrTailscale())
+        assertTrue(InetAddress.getByName("172.16.4.2").isLanOrTailscale())
+        assertTrue(InetAddress.getByName("127.0.0.1").isLanOrTailscale())
+        assertTrue(InetAddress.getByName("169.254.10.2").isLanOrTailscale())
+        assertTrue(InetAddress.getByName("100.64.0.1").isLanOrTailscale())
+        assertTrue(InetAddress.getByName("100.127.255.254").isLanOrTailscale())
+        assertTrue(InetAddress.getByName("fd7a:115c:a1e0::1").isLanOrTailscale())
+
+        assertFalse(InetAddress.getByName("8.8.8.8").isLanOrTailscale())
+        assertFalse(InetAddress.getByName("100.63.255.255").isLanOrTailscale())
+        assertFalse(InetAddress.getByName("100.128.0.1").isLanOrTailscale())
+        assertFalse(InetAddress.getByName("2606:4700:4700::1111").isLanOrTailscale())
+    }
+
+    @Test fun trustedCallerRequiresMatchingSignatureOrPinnedCertificate() {
+        val slate = arrayOf("com.stasisstate.slatetv")
+        assertFalse(isTrustedJellyfinCaller(arrayOf("com.other.app"), signatureMatchesSelf = true))
+        assertFalse(isTrustedJellyfinCaller(slate, signatureMatchesSelf = false))
+        assertTrue(isTrustedJellyfinCaller(slate, signatureMatchesSelf = true))
+        assertFalse(isTrustedJellyfinCaller(slate, signatureMatchesSelf = true, pinnedCertSha256 = "aaaa", callerCertSha256s = setOf("bbbb")))
+        assertTrue(isTrustedJellyfinCaller(slate, signatureMatchesSelf = false, pinnedCertSha256 = "AAAA", callerCertSha256s = setOf("aaaa")))
+    }
 }

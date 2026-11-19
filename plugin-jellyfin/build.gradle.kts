@@ -32,6 +32,15 @@ android {
         versionCode = 1
         versionName = "1.0.0"
 
+        val pinnedHostSha256 = providers.gradleProperty("trustedSlateCertSha256").orNull.orEmpty()
+            .replace(":", "")
+            .trim()
+            .lowercase()
+        buildConfigField("String", "TRUSTED_SLATE_CERT_SHA256", "\"$pinnedHostSha256\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     signingConfigs {

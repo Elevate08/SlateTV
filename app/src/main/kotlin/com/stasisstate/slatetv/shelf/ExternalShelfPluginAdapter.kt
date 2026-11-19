@@ -40,8 +40,12 @@ internal class ExternalShelfPluginAdapter(
             override fun onNullBinding(name: ComponentName) { connected.complete(null) }
         }
         val intent = Intent(PluginContract.ACTION_SHELF_PROVIDER).setComponent(component)
-        if (!runCatching { context.bindService(intent, connection, Context.BIND_AUTO_CREATE) }
-                .getOrDefault(false)) return null
+        val bound = runCatching { context.bindService(intent, connection, Context.BIND_AUTO_CREATE) }
+            .getOrDefault(false)
+        if (!bound) {
+            runCatching { context.unbindService(connection) }
+            return null
+        }
         try {
             val service = withTimeoutOrNull(4_000) { Link(connected.await()) }
                 ?: return recordTimeout()

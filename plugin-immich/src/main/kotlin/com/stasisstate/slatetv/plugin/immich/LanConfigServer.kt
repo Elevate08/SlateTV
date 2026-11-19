@@ -9,6 +9,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.BufferedInputStream
 import java.io.Closeable
+import java.io.IOException
 import java.io.OutputStream
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -60,14 +61,11 @@ class LanConfigServer(
 
     fun start(): String {
         val lanIp = bindAddressOverride?.hostAddress ?: detectLocalIpv4()
-        val bindAddr = bindAddressOverride ?: lanIp?.let { runCatching { InetAddress.getByName(it) }.getOrNull() }
-        val socket = runCatching {
-            ServerSocket(port, 8, bindAddr).apply { reuseAddress = true }
-        }.getOrElse {
-            ServerSocket(port, 8).apply { reuseAddress = true }
-        }
+            ?: throw IOException("No local LAN network interface available")
+        val bindAddr = bindAddressOverride ?: InetAddress.getByName(lanIp)
+        val socket = ServerSocket(port, 8, bindAddr).apply { reuseAddress = true }
         serverSocket = socket
-        boundHostDisplay = lanIp ?: "127.0.0.1"
+        boundHostDisplay = lanIp
 
         val localScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scope = localScope
@@ -96,7 +94,7 @@ class LanConfigServer(
                 }
             }
         }
-        return "http://$boundHostDisplay:${socket.localPort}/?pin=$pin"
+        return "http://$boundHostDisplay:${socket.localPort}/"
     }
 
     override fun close() {
@@ -127,7 +125,6 @@ class LanConfigServer(
         val method = parts[0].uppercase()
         val rawTarget = parts[1]
         val path = rawTarget.substringBefore('?')
-        val query = rawTarget.substringAfter('?', "")
 
         var contentLength: Int? = null
         var headerLines = 0
@@ -172,8 +169,13 @@ class LanConfigServer(
             return
         }
 
-        // Verify Host header matches this local pairing server (prevents DNS rebinding)
-        if (hostHeader != null && !isExpectedHost(hostHeader)) {
+        // Require and verify Host header matches this local pairing server (prevents DNS rebinding)
+        val receivedHost = hostHeader
+        if (receivedHost.isNullOrBlank()) {
+            writeResponse(output, 400, "text/plain", "Missing Host header")
+            return
+        }
+        if (!isExpectedHost(receivedHost)) {
             writeResponse(output, 403, "text/plain", "Forbidden Host")
             return
         }
@@ -190,9 +192,7 @@ class LanConfigServer(
 
         when {
             method == "GET" && (path == "/" || path == "/index.html") -> {
-                val queryParams = parseForm(query)
-                val prefillPin = queryParams["pin"].orEmpty().take(6)
-                writeResponse(output, 200, "text/html; charset=utf-8", renderPage(prefillPin, null))
+                writeResponse(output, 200, "text/html; charset=utf-8", renderPage("", null))
             }
 
             method == "POST" && path == "/save" -> {
@@ -415,7 +415,7 @@ class LanConfigServer(
         <body>
           <div class="card">
             <h1>Sent to your TV</h1>
-            <p>Slate TV received your Immich credentials for <strong>${escapeHtml(serverUrl)}</strong>. Select <strong>Save &amp; Activate</strong> on your TV to finish.</p>
+            <p>Slate TV received your Immich credentials for <strong>${escapeHtml(serverUrl)}</strong>. Select <strong>Save</strong> on your TV to finish.</p>
           </div>
         </body>
         </html>

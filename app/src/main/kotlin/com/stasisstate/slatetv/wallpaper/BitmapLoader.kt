@@ -14,13 +14,21 @@ import androidx.exifinterface.media.ExifInterface
 import com.stasisstate.slatetv.plugin.api.BackgroundMedia
 import com.stasisstate.slatetv.NetworkClientFactory
 import com.stasisstate.slatetv.NetworkClientFactory.executeCancellable
+import com.stasisstate.slatetv.shelf.sanitizeHeaders
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.io.InputStream
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.max
 import kotlin.math.min
 
@@ -46,28 +54,8 @@ data class LoadedBackdrop(
 class BitmapLoader(
     private val context: Context,
     private val diskCache: WallpaperDiskCache,
-    private val baseHttp: OkHttpClient = NetworkClientFactory.defaultClient(allowUntrustedTls = false),
+    private val baseHttp: OkHttpClient = NetworkClientFactory.defaultClient(),
 ) {
-    @Volatile
-    private var cachedUntrustedHost: String? = null
-
-    @Volatile
-    private var cachedUntrustedHttp: OkHttpClient? = null
-
-    private fun httpClientFor(urlHost: String, allowUntrustedTls: Boolean): OkHttpClient {
-        if (!allowUntrustedTls) return baseHttp
-        val normalizedHost = urlHost.lowercase()
-        val existing = cachedUntrustedHttp
-        if (existing != null && cachedUntrustedHost == normalizedHost) return existing
-        val created = NetworkClientFactory.defaultClient(
-            allowUntrustedTls = true,
-            allowedHost = normalizedHost,
-            baseClient = baseHttp,
-        )
-        cachedUntrustedHost = normalizedHost
-        cachedUntrustedHttp = created
-        return created
-    }
 
     suspend fun load(
         media: BackgroundMedia,
@@ -122,9 +110,8 @@ class BitmapLoader(
 
                 uri.startsWith("content://") -> {
                     val cacheKey = cacheKeyFor(media)
-                    val cached = context.contentResolver.openInputStream(Uri.parse(uri))?.use { stream ->
-                        diskCache.putStream(media.copy(id = cacheKey), stream, MAX_DOWNLOAD_BYTES)
-                    } ?: return@withContext null
+                    val cached = loadContentUriToCache(uri, media.copy(id = cacheKey))
+                        ?: return@withContext null
                     val decoded = decodeFileToBackdrop(cached, targetWidth, targetHeight, smartPortraitBlur)
                     if (decoded == null) diskCache.remove(cacheKey)
                     decoded
@@ -170,18 +157,47 @@ class BitmapLoader(
 
     fun cacheKeyFor(media: BackgroundMedia): String = "${media.id}|${media.imageUri}"
 
-    private suspend fun downloadToCache(media: BackgroundMedia): WallpaperDiskCache.CachedEntry? {
-        val parsedUrl = media.imageUri.toHttpUrlOrNull() ?: return null
-        val client = httpClientFor(parsedUrl.host, media.allowUntrustedTls)
-        val reqBuilder = Request.Builder().url(parsedUrl).get()
-        media.headers.forEach { (k, v) ->
-            // Sanitize header keys/values to prevent IllegalArgumentException from untrusted plugins
-            if (isValidHeader(k, v)) {
-                reqBuilder.header(k, v)
+    private suspend fun loadContentUriToCache(
+        uri: String,
+        media: BackgroundMedia,
+    ): WallpaperDiskCache.CachedEntry? {
+        val result = CompletableDeferred<WallpaperDiskCache.CachedEntry?>()
+        val activeStream = AtomicReference<InputStream?>(null)
+        val future = runCatching {
+            contentExecutor.submit {
+                try {
+                    val parsed = Uri.parse(uri)
+                    val entry = context.contentResolver.openInputStream(parsed)?.use { stream ->
+                        activeStream.set(stream)
+                        diskCache.putStream(media, stream, MAX_DOWNLOAD_BYTES)
+                    }
+                    result.complete(entry)
+                } catch (_: Exception) {
+                    result.complete(null)
+                } finally {
+                    activeStream.set(null)
+                }
+            }
+        }.getOrNull() ?: return null
+
+        return try {
+            withTimeoutOrNull(CONTENT_URI_TIMEOUT_MS) { result.await() }
+        } finally {
+            if (!result.isCompleted) {
+                runCatching { activeStream.getAndSet(null)?.close() }
+                future.cancel(true)
             }
         }
+    }
+
+    private suspend fun downloadToCache(media: BackgroundMedia): WallpaperDiskCache.CachedEntry? {
+        val parsedUrl = media.imageUri.toHttpUrlOrNull() ?: return null
+        val reqBuilder = Request.Builder().url(parsedUrl).get()
+        sanitizeHeaders(media.headers.asSequence().map { it.key to it.value }).forEach { (k, v) ->
+            reqBuilder.header(k, v)
+        }
         return try {
-            client.executeCancellable(reqBuilder.build()).use { resp ->
+            baseHttp.executeCancellable(reqBuilder.build()).use { resp ->
                 if (!resp.isSuccessful) return null
                 val contentLength = resp.body?.contentLength() ?: -1L
                 if (contentLength > MAX_DOWNLOAD_BYTES) return null
@@ -193,13 +209,6 @@ class BitmapLoader(
         } catch (_: Exception) {
             null
         }
-    }
-
-    private fun isValidHeader(name: String, value: String): Boolean {
-        if (name.isBlank() || name.length > 128 || value.length > 4096) return false
-        if (name.any { it <= '\u0020' || it >= '\u007f' }) return false
-        if (value.any { it == '\r' || it == '\n' || it == '\u0000' }) return false
-        return true
     }
 
     private fun decodeFileToBackdrop(
@@ -307,7 +316,17 @@ class BitmapLoader(
 
     companion object {
         const val MAX_DOWNLOAD_BYTES = 16L * 1024L * 1024L
+        private const val CONTENT_URI_TIMEOUT_MS = 10_000L
         private const val MAX_DECODED_PIXELS = 4_500_000L // ~18 MB ARGB_8888 ceiling even for panoramas
+
+        // Bounded daemon pool for content:// reads so a stalled plugin provider cannot wedge Dispatchers.IO
+        private val contentExecutor = ThreadPoolExecutor(
+            0,
+            4,
+            30L,
+            TimeUnit.SECONDS,
+            SynchronousQueue(),
+        ) { work -> Thread(work, "slate-content-loader").apply { isDaemon = true } }
 
         internal fun calculateInSampleSize(srcW: Int, srcH: Int, reqW: Int, reqH: Int): Int {
             var inSampleSize = 1

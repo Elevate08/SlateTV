@@ -2,18 +2,24 @@ package com.stasisstate.slatetv.plugin.jellyfin
 
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Binder
+import android.os.Build
 import android.os.Bundle
 import android.os.Process
 import android.os.SystemClock
 import com.stasisstate.slatetv.plugin.api.*
 import kotlinx.coroutines.*
+import java.security.MessageDigest
 import java.time.Instant
 
 internal const val JELLYFIN_TV = "org.jellyfin.androidtv"
 internal const val CHANNEL_ID = "channel_id"
+private const val SLATE_PACKAGE = "com.stasisstate.slatetv"
 
 class JellyfinShelfPluginService : Service() {
+    private val logoCache by lazy { JellyfinLogoCache(applicationContext) }
+
     private val binder = object : ISlateShelfPlugin.Stub() {
         override fun getApiVersion() = PluginContract.API_VERSION
 
@@ -24,9 +30,8 @@ class JellyfinShelfPluginService : Service() {
         )
 
         override fun getShelfPayload(options: Bundle?): ShelfPayload {
-            if (Binder.getCallingUid() != Process.myUid()) {
-                val packages = packageManager.getPackagesForUid(Binder.getCallingUid()).orEmpty()
-                if ("com.stasisstate.slatetv" !in packages) return unavailable("Slate TV access required.")
+            if (!isCallerAuthorized(Binder.getCallingUid())) {
+                return unavailable("Slate TV access required.")
             }
             return runCatching { runBlocking { shelf() } }
                 .getOrElse { unavailable("Could not load Jellyfin Live TV.") }
@@ -35,8 +40,23 @@ class JellyfinShelfPluginService : Service() {
 
     override fun onBind(intent: Intent?) = binder
 
+    private fun isCallerAuthorized(callingUid: Int): Boolean {
+        if (callingUid == Process.myUid()) return true
+        val packages = packageManager.getPackagesForUid(callingUid).orEmpty()
+        if (SLATE_PACKAGE !in packages) return false
+        val pinned = BuildConfig.TRUSTED_SLATE_CERT_SHA256
+        val sigMatches = packageManager.checkSignatures(packageName, SLATE_PACKAGE) == PackageManager.SIGNATURE_MATCH
+        val certs = if (pinned.isNotBlank()) signingCertSha256s(packageManager, SLATE_PACKAGE) else emptySet()
+        return isTrustedJellyfinCaller(
+            packages = packages,
+            signatureMatchesSelf = sigMatches,
+            pinnedCertSha256 = pinned,
+            callerCertSha256s = certs,
+        )
+    }
+
     private suspend fun shelf(): ShelfPayload {
-        val config = JellyfinConfigStore(this).load()
+        val config = JellyfinConfigStore(applicationContext).load()
         val (refresh, cached) = synchronized(cacheLock) {
             if (snapshot != config) {
                 pending?.cancel()
@@ -47,8 +67,10 @@ class JellyfinShelfPluginService : Service() {
             if (config.serverUrl.isBlank() || config.apiKey.isBlank()) return unavailable("Configure Jellyfin first.")
 
             val age = SystemClock.elapsedRealtime() - completedAt
-            val cached = lastPayload?.takeIf { age <= 90_000 }
-            if (cached != null && age < 45_000) return cached
+            val last = lastPayload
+            val freshTtl = if (last?.available == true) SUCCESS_FRESH_MS else FAILURE_FRESH_MS
+            if (last != null && age < freshTtl) return last
+            val cached = last?.takeIf { it.available && age <= SUCCESS_STALE_MS }
 
             val generation = snapshot
             val refresh = pending ?: refreshScope.async(start = CoroutineStart.LAZY) {
@@ -86,9 +108,23 @@ class JellyfinShelfPluginService : Service() {
         if (channels.isEmpty()) return unavailable("No Live TV channels found.")
         val now = Instant.now()
         val inGuide = config.cardTapAction == CardTapAction.OPEN_GUIDE
+
+        // Proxy logos through JellyfinMediaProvider so Jellyfin tokens never leave this plugin
+        // and self-signed LAN HTTPS channel icons load cleanly in Slate TV.
+        val proxiedLogos = coroutineScope {
+            channels.map { channel ->
+                async(Dispatchers.IO) {
+                    val rawUrl = channel.imageUri?.takeIf { it.length <= 2048 } ?: return@async channel.id to null
+                    val contentUri = withTimeoutOrNull(2_000L) {
+                        logoCache.publish(api, rawUrl, channel.imageTag, SLATE_PACKAGE)?.toString()
+                    }
+                    channel.id to contentUri
+                }
+            }.awaitAll().toMap()
+        }
+
         val items = channels.map { channel ->
             val program = channel.current
-            val image = channel.imageUri?.takeIf { it.length <= 2048 }
             ShelfItem(
                 id = channel.id.take(128),
                 title = channel.name.take(120),
@@ -96,8 +132,8 @@ class JellyfinShelfPluginService : Service() {
                     .ifBlank { null },
                 channelNumber = channel.number?.take(16),
                 badge = if (program?.isLive == true) "LIVE" else null,
-                imageUri = image,
-                imageHeaders = Bundle().apply { if (image != null) putString("Authorization", api.authorization) },
+                imageUri = proxiedLogos[channel.id],
+                imageHeaders = Bundle(),
                 progressPercent = program?.progressPercent(now) ?: -1,
                 startTimeEpochMs = program?.start?.toEpochMilli() ?: 0,
                 endTimeEpochMs = program?.end?.toEpochMilli() ?: 0,
@@ -112,6 +148,10 @@ class JellyfinShelfPluginService : Service() {
     private fun unavailable(reason: String) = ShelfPayload(false, "Live TV", emptyList(), reason)
 
     private companion object {
+        const val SUCCESS_FRESH_MS = 45_000L
+        const val SUCCESS_STALE_MS = 90_000L
+        const val FAILURE_FRESH_MS = 3_000L
+
         val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val cacheLock = Any()
         var snapshot: JellyfinConfig? = null
@@ -120,3 +160,33 @@ class JellyfinShelfPluginService : Service() {
         var completedAt = 0L
     }
 }
+
+internal fun isTrustedJellyfinCaller(
+    packages: Array<out String>,
+    signatureMatchesSelf: Boolean,
+    pinnedCertSha256: String = "",
+    callerCertSha256s: Set<String> = emptySet(),
+): Boolean {
+    if (SLATE_PACKAGE !in packages) return false
+    val expected = pinnedCertSha256.trim().lowercase()
+    return if (expected.isNotEmpty()) {
+        expected in callerCertSha256s
+    } else {
+        signatureMatchesSelf
+    }
+}
+
+private fun signingCertSha256s(pm: PackageManager, targetPackage: String): Set<String> = runCatching {
+    val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        val info = pm.getPackageInfo(targetPackage, PackageManager.GET_SIGNING_CERTIFICATES)
+        val signingInfo = info.signingInfo ?: return@runCatching emptySet()
+        if (signingInfo.hasMultipleSigners()) signingInfo.apkContentsSigners else signingInfo.signingCertificateHistory
+    } else {
+        @Suppress("DEPRECATION")
+        pm.getPackageInfo(targetPackage, PackageManager.GET_SIGNATURES).signatures
+    }
+    val md = MessageDigest.getInstance("SHA-256")
+    signatures.orEmpty().map { sig ->
+        md.digest(sig.toByteArray()).joinToString("") { "%02x".format(it) }
+    }.toSet()
+}.getOrDefault(emptySet())

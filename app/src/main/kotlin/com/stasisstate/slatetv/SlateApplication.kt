@@ -46,7 +46,7 @@ class SlateApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         // Share a single OkHttp connection/dispatcher pool across API & image loading
-        sharedHttpClient = NetworkClientFactory.defaultClient(allowUntrustedTls = false)
+        sharedHttpClient = NetworkClientFactory.defaultClient()
         launcherPreferences = LauncherPreferences(this)
         dockPreferences = DockPreferences(this)
         appRepository = AppRepository(this)

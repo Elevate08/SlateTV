@@ -24,7 +24,6 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLException
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
-import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
@@ -70,7 +69,15 @@ class ImmichApiClient(
 
     fun buildAssetImageUrl(config: ImmichConfig, assetId: String): String {
         val base = config.normalizedServerUrl
-        return "$base/api/assets/$assetId/thumbnail?size=${config.imageQuality.apiSize}"
+        val built = base.toHttpUrlOrNull()?.newBuilder()
+            ?.addPathSegment("api")
+            ?.addPathSegment("assets")
+            ?.addPathSegment(assetId)
+            ?.addPathSegment("thumbnail")
+            ?.addQueryParameter("size", config.imageQuality.apiSize)
+            ?.build()
+        return built?.toString()
+            ?: "$base/api/assets/$assetId/thumbnail?size=${config.imageQuality.apiSize}"
     }
 
     fun buildAuthHeaders(config: ImmichConfig): Map<String, String> = mapOf(
@@ -205,7 +212,7 @@ class ImmichApiClient(
 
         client.executeCancellable(req).use { resp ->
             checkResponse(resp.code, resp.message)
-            val body = resp.body?.string().orEmpty()
+            val body = readBoundedJsonBody(resp)
             val array = JSONArray(body)
             return buildList(array.length()) {
                 for (i in 0 until array.length()) {
@@ -338,7 +345,7 @@ class ImmichApiClient(
                         checkResponse(resp.code, resp.message)
                     }
                     if (!resp.isSuccessful) return@use emptyList()
-                    val root = JSONObject(resp.body?.string().orEmpty())
+                    val root = JSONObject(readBoundedJsonBody(resp))
                     val items = root.optJSONObject("assets")?.optJSONArray("items") ?: JSONArray()
                     parseAssetArray(items)
                 }
@@ -352,8 +359,14 @@ class ImmichApiClient(
         // Legacy fallback: GET /api/albums/{id} (Immich v1/v2 servers that didn't support albumIds in metadata search)
         if (collected.isEmpty()) {
             for (albumId in sampledAlbums) {
+                val albumUrl = config.normalizedServerUrl.toHttpUrlOrNull()?.newBuilder()
+                    ?.addPathSegment("api")
+                    ?.addPathSegment("albums")
+                    ?.addPathSegment(albumId)
+                    ?.build()
+                    ?: continue
                 val req = Request.Builder()
-                    .url("${config.normalizedServerUrl}/api/albums/$albumId")
+                    .url(albumUrl)
                     .header(HEADER_API_KEY, config.apiKey.trim())
                     .header("Accept", "application/json")
                     .get()
@@ -363,7 +376,7 @@ class ImmichApiClient(
                         checkResponse(resp.code, resp.message)
                     }
                     if (!resp.isSuccessful) return@use
-                    val obj = JSONObject(resp.body?.string().orEmpty())
+                    val obj = JSONObject(readBoundedJsonBody(resp))
                     val assets = obj.optJSONArray("assets") ?: JSONArray()
                     collected += parseAssetArray(assets)
                 }
@@ -393,7 +406,7 @@ class ImmichApiClient(
 
         client.executeCancellable(req1).use { resp ->
             if (resp.isSuccessful) {
-                return parse(resp.body?.string().orEmpty())
+                return parse(readBoundedJsonBody(resp))
             }
             if (resp.code != 400) {
                 checkResponse(resp.code, resp.message)
@@ -410,8 +423,20 @@ class ImmichApiClient(
 
         client.executeCancellable(req2).use { resp ->
             checkResponse(resp.code, resp.message)
-            return parse(resp.body?.string().orEmpty())
+            return parse(readBoundedJsonBody(resp))
         }
+    }
+
+    private fun readBoundedJsonBody(resp: Response): String {
+        val body = resp.body ?: return ""
+        if (body.contentLength() > MAX_JSON_BYTES) {
+            throw IOException("Immich JSON response exceeds $MAX_JSON_BYTES bytes")
+        }
+        val source = body.source()
+        if (source.request(MAX_JSON_BYTES + 1)) {
+            throw IOException("Immich JSON response exceeds $MAX_JSON_BYTES bytes")
+        }
+        return source.readUtf8()
     }
 
     private fun parseAssetArray(array: JSONArray): List<ImmichAsset> {
@@ -464,6 +489,7 @@ class ImmichApiClient(
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val ROTATED_EXIF_ORIENTATIONS = setOf("5", "6", "7", "8")
         private const val MAX_RECENT_PAGES = 10
+        private const val MAX_JSON_BYTES = 4L * 1024 * 1024
 
         suspend fun OkHttpClient.executeCancellable(request: Request): Response {
             val call = newCall(request)
@@ -475,11 +501,7 @@ class ImmichApiClient(
                     }
 
                     override fun onResponse(call: Call, response: Response) {
-                        if (cont.isActive) {
-                            cont.resume(response)
-                        } else {
-                            response.close()
-                        }
+                        cont.resume(response) { _, discarded, _ -> discarded.close() }
                     }
                 })
             }
@@ -487,7 +509,8 @@ class ImmichApiClient(
 
         /**
          * Builds an OkHttpClient that strips sensitive auth headers (`x-api-key`, `Authorization`)
-         * on any cross-origin HTTP redirect so credentials can never leak to third-party hosts.
+         * on any cross-origin HTTP redirect so credentials can never leak to third-party hosts,
+         * and switches HTTP 303 redirects to GET per RFC 9110.
          */
         @SuppressLint("CustomX509TrustManager", "TrustAllX509TrustManager")
         fun defaultClient(
@@ -502,7 +525,9 @@ class ImmichApiClient(
                 .callTimeout(20, TimeUnit.SECONDS)
                 .followRedirects(false)
                 .followSslRedirects(false)
-                .addInterceptor { chain ->
+
+            if (baseClient == null) {
+                builder.addInterceptor { chain ->
                     val original = chain.request()
                     var currentReq = original
                     var response = chain.proceed(currentReq)
@@ -513,8 +538,12 @@ class ImmichApiClient(
                         val sameOrigin = nextUrl.scheme == original.url.scheme &&
                             nextUrl.host.equals(original.url.host, ignoreCase = true) &&
                             nextUrl.port == original.url.port
+                        val code = response.code
                         response.close()
                         val nextBuilder = currentReq.newBuilder().url(nextUrl)
+                        if (code == 303 && currentReq.method != "GET" && currentReq.method != "HEAD") {
+                            nextBuilder.method("GET", null)
+                        }
                         if (!sameOrigin) {
                             nextBuilder.removeHeader(HEADER_API_KEY)
                             nextBuilder.removeHeader("Authorization")
@@ -526,6 +555,7 @@ class ImmichApiClient(
                     }
                     response
                 }
+            }
 
             if (allowUntrustedTls) {
                 val trustAll = object : X509TrustManager {

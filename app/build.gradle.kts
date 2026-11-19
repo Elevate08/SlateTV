@@ -66,7 +66,7 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-        // Required by Google Play Billing 9.2+
+        // Required by Google Play Billing 8.0+
         isCoreLibraryDesugaringEnabled = true
     }
 
