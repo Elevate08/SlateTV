@@ -39,7 +39,7 @@ internal data class TifProgramRow(
 /** Source of raw TV Provider rows; throws [SecurityException] when READ_TV_LISTINGS is not granted. */
 internal interface TvListingsReader {
     fun channels(): List<TifChannelRow>
-    fun programs(fromMs: Long, toMs: Long): List<TifProgramRow>
+    fun programs(channelIds: List<Long>, fromMs: Long, toMs: Long): List<TifProgramRow>
 }
 
 internal sealed interface SystemTvResult {
@@ -69,7 +69,7 @@ internal class SystemTvChannelsSource(
         if (visible.isEmpty()) return SystemTvResult.Ready(emptyList(), emptyMap())
 
         val programs = try {
-            reader.programs(now - 1, now + UPCOMING_WINDOW_MS)
+            reader.programs(visible.map { it.id }, now - 1, now + UPCOMING_WINDOW_MS)
         } catch (_: SecurityException) {
             return SystemTvResult.NeedsPermission
         } catch (_: Exception) {
@@ -193,18 +193,23 @@ internal class ContentResolverTvListingsReader(private val resolver: ContentReso
         return cursor.use { parseChannelRows(it) }
     }
 
-    override fun programs(fromMs: Long, toMs: Long): List<TifProgramRow> {
+    override fun programs(channelIds: List<Long>, fromMs: Long, toMs: Long): List<TifProgramRow> {
+        // Android's TvProvider forbids SQL selection and sortOrder for apps without ACCESS_ALL_EPG_DATA.
+        // TvContract.buildProgramsUriForChannel(id, start, end) is the official READ_TV_LISTINGS-safe API.
         val projection = arrayOf(
             TvContract.Programs.COLUMN_CHANNEL_ID, TvContract.Programs.COLUMN_TITLE, TvContract.Programs.COLUMN_EPISODE_TITLE,
             TvContract.Programs.COLUMN_SHORT_DESCRIPTION, TvContract.Programs.COLUMN_LONG_DESCRIPTION,
             TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS, TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS,
         )
-        val selection = "${TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS}>? AND ${TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS}<=?"
-        val cursor = resolver.query(
-            TvContract.Programs.CONTENT_URI, projection, selection, arrayOf(fromMs.toString(), toMs.toString()),
-            "${TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS} ASC",
-        ) ?: return emptyList()
-        return cursor.use { parseProgramRows(it) }
+        val rows = ArrayList<TifProgramRow>()
+        for (channelId in channelIds) {
+            val remaining = MAX_PROGRAM_ROWS - rows.size
+            if (remaining <= 0) break
+            val uri = TvContract.buildProgramsUriForChannel(channelId, fromMs, toMs)
+            val cursor = resolver.query(uri, projection, null, null, null) ?: continue
+            cursor.use { rows += parseProgramRows(it, limit = remaining) }
+        }
+        return rows
     }
 
     /** Channel logo bytes (≤2 MiB) from the TV provider, or `null` when absent / too large / unreadable. */

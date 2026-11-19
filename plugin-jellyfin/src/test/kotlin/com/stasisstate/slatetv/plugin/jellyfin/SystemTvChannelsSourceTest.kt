@@ -23,8 +23,10 @@ class SystemTvChannelsSourceTest {
         val programs: () -> List<TifProgramRow> = { emptyList() },
     ) : TvListingsReader {
         var window: Pair<Long, Long>? = null
+        var requestedChannelIds: List<Long>? = null
         override fun channels() = channels.invoke()
-        override fun programs(fromMs: Long, toMs: Long): List<TifProgramRow> {
+        override fun programs(channelIds: List<Long>, fromMs: Long, toMs: Long): List<TifProgramRow> {
+            requestedChannelIds = channelIds
             window = fromMs to toMs
             return programs.invoke()
         }
