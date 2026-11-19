@@ -2,7 +2,6 @@ import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.play.publisher)
 }
 
@@ -24,7 +23,7 @@ val releaseSigningReady = keystoreProps != null &&
 
 android {
     namespace = "com.stasisstate.slatetv"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.stasisstate.slatetv"
@@ -67,12 +66,8 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-        // Required by Google Play Billing 8.0+
+        // Required by Google Play Billing 9.2+
         isCoreLibraryDesugaringEnabled = true
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"
     }
 
     testOptions {

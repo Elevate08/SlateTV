@@ -66,7 +66,7 @@ Slate TV discovers companion plugin APKs automatically via Android's `PackageMan
 
 ## Building from Source
 
-Requires JDK 17 or 21 and Android SDK (API 36). Optional release signing reads untracked `keystore.properties`; debug builds require no credentials.
+Requires JDK 17+ (builds natively on JDK 27) and Android SDK (API 37). Optional release signing reads untracked `keystore.properties`; debug builds require no credentials.
 
 ```bash
 # Run all unit tests across all modules (162 tests)

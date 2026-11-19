@@ -2,7 +2,6 @@ import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
 }
 
 // Optional upload-key signing (Stasis State convention): read from untracked keystore.properties
@@ -23,7 +22,7 @@ val releaseSigningReady = keystoreProps != null &&
 
 android {
     namespace = "com.stasisstate.slatetv.plugin.immich"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.stasisstate.slatetv.plugin.immich"
@@ -76,10 +75,6 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"
     }
 
     testOptions {
