@@ -1,3 +1,0 @@
-package dev.slatetv.plugin.api;
-
-parcelable PluginMediaItem;

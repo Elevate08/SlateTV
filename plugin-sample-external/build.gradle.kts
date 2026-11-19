@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "dev.slatetv.plugin.sample"
+    namespace = "com.stasisstate.slatetv.plugin.sample"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "dev.slatetv.plugin.sample"
+        applicationId = "com.stasisstate.slatetv.plugin.sample"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

@@ -29,7 +29,7 @@ If you previously used Projectivy or Launcher Manager on your Shield:
 1. Open **Shield Settings > Device Preferences > Accessibility** and turn **OFF** Projectivy Launcher's Accessibility Service.
 2. If you previously disabled the stock Google TV launcher via ADB, **verify Slate TV launches cleanly first** before uninstalling Projectivy:
    ```bash
-   adb shell monkey -p dev.slatetv.launcher -c android.intent.category.LEANBACK_LAUNCHER 1
+   adb shell monkey -p com.stasisstate.slatetv -c android.intent.category.LEANBACK_LAUNCHER 1
    ```
 3. Configure Immich inside Slate TV (**Settings gear > Immich Photos > Configure Immich Plugin… > Pair with Phone (QR Code)**).
 
@@ -45,7 +45,7 @@ Android TV restricts the normal "Default Home App" chooser in UI settings unless
 adb shell pm disable-user --user 0 com.google.android.tvlauncher
 
 # 2. Explicitly bind Slate TV as the Home activity
-adb shell cmd package set-home-activity dev.slatetv.launcher/.ui.HomeActivity
+adb shell cmd package set-home-activity com.stasisstate.slatetv/.ui.HomeActivity
 ```
 Press the **Home** button on your Shield remote—Slate TV opens instantaneously with zero stock-launcher flash and zero Accessibility Service overhead.
 

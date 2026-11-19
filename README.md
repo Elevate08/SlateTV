@@ -35,7 +35,7 @@
   - **Homelab Friendly:** Supports local LAN `http://` servers and optional self-signed LAN HTTPS certificates.
 - **Open Plugin Architecture (`:plugin-api`):**
   - Built-in plugins: **Immich Photos**, **Ambient Slate** (offline dark architectural gradients), and **Local Photos**.
-  - External APK plugin discovery via Android AIDL (`dev.slatetv.launcher.plugin.BACKGROUND_PROVIDER`) with HTTP header support, strict 5-second IPC timeouts, immediate unbinding, and full crash isolation.
+  - External APK plugin discovery via Android AIDL (`com.stasisstate.slatetv.plugin.BACKGROUND_PROVIDER`) with HTTP header support, strict 5-second IPC timeouts, immediate unbinding, and full crash isolation.
   - Includes `:plugin-sample-external`, a working standalone external plugin APK.
 
 ---
@@ -55,10 +55,10 @@
 
 ## Project Modules
 
-- `:app` — Slate TV Launcher APK (`dev.slatetv.launcher`)
+- `:app` — Slate TV Launcher APK (`com.stasisstate.slatetv`)
 - `:plugin-api` — Open plugin interfaces & AIDL IPC contract (`ISlateBackgroundPlugin`)
 - `:plugin-immich` — First-class Immich REST client, plugin implementation, QR generator, and on-demand LAN pairing server
-- `:plugin-sample-external` — Reference standalone external plugin APK (`dev.slatetv.plugin.sample`)
+- `:plugin-sample-external` — Reference standalone external plugin APK (`com.stasisstate.slatetv.plugin.sample`)
 
 ---
 

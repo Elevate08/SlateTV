@@ -20,7 +20,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "SlateTVLauncher"
+rootProject.name = "SlateTV"
 include(":plugin-api")
 include(":plugin-immich")
 include(":plugin-sample-external")

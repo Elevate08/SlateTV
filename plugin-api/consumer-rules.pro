@@ -1,1 +1,1 @@
--keep class dev.slatetv.plugin.api.** { *; }
+-keep class com.stasisstate.slatetv.plugin.api.** { *; }

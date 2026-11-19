@@ -1,4 +1,4 @@
--keep class dev.slatetv.plugin.api.** { *; }
+-keep class com.stasisstate.slatetv.plugin.api.** { *; }
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**

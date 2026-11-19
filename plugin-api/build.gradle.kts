@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.slatetv.plugin.api"
+    namespace = "com.stasisstate.slatetv.plugin.api"
     compileSdk = 36
 
     defaultConfig {

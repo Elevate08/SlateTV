@@ -25,7 +25,7 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
         <intent>
-            <action android:name="dev.slatetv.launcher.plugin.BACKGROUND_PROVIDER" />
+            <action android:name="com.stasisstate.slatetv.plugin.BACKGROUND_PROVIDER" />
         </intent>
     </queries>
 

@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.slatetv.plugin.immich"
+    namespace = "com.stasisstate.slatetv.plugin.immich"
     compileSdk = 36
 
     defaultConfig {

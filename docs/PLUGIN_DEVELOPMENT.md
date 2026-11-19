@@ -75,22 +75,22 @@ class MyBackgroundPluginService : Service() {
     android:name=".MyBackgroundPluginService"
     android:exported="true">
     <intent-filter>
-        <action android:name="dev.slatetv.launcher.plugin.BACKGROUND_PROVIDER" />
+        <action android:name="com.stasisstate.slatetv.plugin.BACKGROUND_PROVIDER" />
     </intent-filter>
     <meta-data
-        android:name="dev.slatetv.plugin.ID"
+        android:name="com.stasisstate.slatetv.plugin.ID"
         android:value="com.example.myplugin" />
     <meta-data
-        android:name="dev.slatetv.plugin.NAME"
+        android:name="com.stasisstate.slatetv.plugin.NAME"
         android:value="My Photo Feed" />
     <meta-data
-        android:name="dev.slatetv.plugin.DESCRIPTION"
+        android:name="com.stasisstate.slatetv.plugin.DESCRIPTION"
         android:value="Custom backdrops from my server" />
     <meta-data
-        android:name="dev.slatetv.plugin.SETTINGS_ACTIVITY"
+        android:name="com.stasisstate.slatetv.plugin.SETTINGS_ACTIVITY"
         android:value="com.example.myplugin.MySettingsActivity" />
     <meta-data
-        android:name="dev.slatetv.plugin.API_VERSION"
+        android:name="com.stasisstate.slatetv.plugin.API_VERSION"
         android:value="1" />
 </service>
 ```
