@@ -390,4 +390,176 @@ class ImmichApiClientTest {
         assertTrue("Expected encoded slash in $url", url.contains("%2F"))
         assertFalse("Raw traversal must not appear in $url", url.contains("/../"))
     }
+
+    // ── Direct sign-in + API key minting ──────────────────────────────────────────────
+
+    private fun serverBase() = server.url("").toString().trimEnd('/')
+
+    @Test
+    fun `signInAndCreateApiKey logs in then mints scoped key and logs out`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"accessToken":"tok-abc-999","userEmail":"me@example.com"}"""))
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"apiKey":{"id":"k1","name":"Slate TV"},"secret":"minted-secret-xyz"}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"successful":true}"""))
+
+        val result = client.signInAndCreateApiKey(serverBase(), " me@example.com ", "hunter2-pass", allowUntrustedTls = false)
+
+        assertTrue(result is ImmichSignInResult.Success)
+        result as ImmichSignInResult.Success
+        assertEquals("minted-secret-xyz", result.apiKey)
+        assertEquals(serverBase(), result.serverUrl)
+
+        val login = server.takeRequest()
+        assertEquals("POST", login.method)
+        assertEquals("/api/auth/login", login.path)
+        val loginJson = JSONObject(login.body.readUtf8())
+        assertEquals("me@example.com", loginJson.getString("email"))
+        assertEquals("hunter2-pass", loginJson.getString("password"))
+
+        val create = server.takeRequest()
+        assertEquals("POST", create.method)
+        assertEquals("/api/api-keys", create.path)
+        assertEquals("Bearer tok-abc-999", create.getHeader("Authorization"))
+        assertNull(create.getHeader("x-api-key"))
+        val createBody = create.body.readUtf8()
+        val createJson = JSONObject(createBody)
+        assertEquals("Slate TV", createJson.getString("name"))
+        val perms = createJson.getJSONArray("permissions")
+        assertEquals(listOf("album.read", "asset.read", "asset.view"), (0 until perms.length()).map { perms.getString(it) })
+        assertFalse(createBody.contains("hunter2-pass"))
+
+        val logout = server.takeRequest()
+        assertEquals("/api/auth/logout", logout.path)
+        assertEquals("Bearer tok-abc-999", logout.getHeader("Authorization"))
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test
+    fun `signInAndCreateApiKey falls back to unscoped key when older server rejects permissions`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"accessToken":"tok-1"}"""))
+        server.enqueue(MockResponse().setResponseCode(400).setBody("""{"message":["property permissions should not exist"]}"""))
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"secret":"legacy-secret"}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+
+        val result = client.signInAndCreateApiKey(serverBase(), "a@b.co", "pw", allowUntrustedTls = false)
+
+        assertEquals("legacy-secret", (result as ImmichSignInResult.Success).apiKey)
+        server.takeRequest() // login
+        val scoped = JSONObject(server.takeRequest().body.readUtf8())
+        assertTrue(scoped.has("permissions"))
+        val legacy = JSONObject(server.takeRequest().body.readUtf8())
+        assertEquals("Slate TV", legacy.getString("name"))
+        assertFalse(legacy.has("permissions"))
+    }
+
+    @Test
+    fun `signInAndCreateApiKey does not retry non-400 key failures`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"accessToken":"tok-1"}"""))
+        server.enqueue(MockResponse().setResponseCode(403).setBody("""{"message":"Forbidden"}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+
+        val result = client.signInAndCreateApiKey(serverBase(), "a@b.co", "pw", allowUntrustedTls = false)
+
+        assertTrue(result is ImmichSignInResult.Failure)
+        assertTrue((result as ImmichSignInResult.Failure).isAuthError)
+        assertEquals(3, server.requestCount) // login, one key attempt, logout
+    }
+
+    @Test
+    fun `signInAndCreateApiKey reports bad credentials on 401 without touching api-keys`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(401).setBody("""{"message":"Incorrect email or password"}"""))
+
+        val result = client.signInAndCreateApiKey(serverBase(), "a@b.co", "wrong-pass-77", allowUntrustedTls = false)
+
+        assertTrue(result is ImmichSignInResult.Failure)
+        result as ImmichSignInResult.Failure
+        assertTrue(result.isAuthError)
+        assertFalse(result.message.contains("wrong-pass-77"))
+        assertEquals(1, server.requestCount)
+        assertEquals("/api/auth/login", server.takeRequest().path)
+    }
+
+    @Test
+    fun `signInAndCreateApiKey rejects malformed URL and empty credentials without network`() = runTest {
+        val bad = client.signInAndCreateApiKey("http://bad host:abc", "a@b.co", "pw", allowUntrustedTls = false)
+        assertTrue(bad is ImmichSignInResult.Failure)
+        val blankEmail = client.signInAndCreateApiKey(serverBase(), "  ", "pw", allowUntrustedTls = false)
+        assertTrue(blankEmail is ImmichSignInResult.Failure)
+        val blankUrl = client.signInAndCreateApiKey("", "a@b.co", "pw", allowUntrustedTls = false)
+        assertTrue(blankUrl is ImmichSignInResult.Failure)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun `signInAndCreateApiKey never follows redirects so the password is not replayed`() = runTest {
+        val other = MockWebServer().also { it.start() }
+        try {
+            server.enqueue(
+                MockResponse().setResponseCode(307).setHeader("Location", other.url("/api/auth/login").toString()),
+            )
+            val result = client.signInAndCreateApiKey(serverBase(), "a@b.co", "pw-secret-1", allowUntrustedTls = false)
+            assertTrue(result is ImmichSignInResult.Failure)
+            assertEquals(0, other.requestCount)
+        } finally {
+            other.shutdown()
+        }
+    }
+
+    @Test
+    fun `signInAndCreateApiKey never leaks password or access token in results or messages`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"accessToken":"tok-LEAKCHECK"}"""))
+        server.enqueue(MockResponse().setResponseCode(500).setBody("""{"error":"boom tok-LEAKCHECK pw-LEAKCHECK"}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+
+        val failure = client.signInAndCreateApiKey(serverBase(), "a@b.co", "pw-LEAKCHECK", allowUntrustedTls = false)
+        val text = failure.toString()
+        assertTrue(failure is ImmichSignInResult.Failure)
+        assertFalse(text.contains("pw-LEAKCHECK"))
+        assertFalse(text.contains("tok-LEAKCHECK"))
+
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"accessToken":"tok-LEAKCHECK"}"""))
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"secret":"minted-key"}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+        val success = client.signInAndCreateApiKey(serverBase(), "a@b.co", "pw-LEAKCHECK", allowUntrustedTls = false)
+        assertTrue(success is ImmichSignInResult.Success)
+        assertFalse(success.toString().contains("minted-key"))
+        assertFalse(success.toString().contains("pw-LEAKCHECK"))
+        assertFalse(success.toString().contains("tok-LEAKCHECK"))
+    }
+
+    @Test
+    fun `signInAndCreateApiKey reports unreachable server`() = runTest {
+        val url = serverBase()
+        server.shutdown()
+        val result = client.signInAndCreateApiKey(url, "a@b.co", "pw", allowUntrustedTls = false)
+        assertTrue(result is ImmichSignInResult.Failure)
+    }
+
+    // ── URL normalization & discovery filtering ───────────────────────────────────────
+
+    @Test
+    fun `normalizeUrl defaults domains to https and preserves explicit scheme and port`() {
+        assertEquals("https://photos.example.com", ImmichConfig.normalizeUrl("photos.example.com"))
+        assertEquals("https://photos.example.com", ImmichConfig.normalizeUrl(" photos.example.com/ "))
+        assertEquals("http://photos.example.com:2283", ImmichConfig.normalizeUrl("photos.example.com:2283"))
+        assertEquals("https://photos.example.com:443", ImmichConfig.normalizeUrl("photos.example.com:443"))
+        assertEquals("http://photos.example.com", ImmichConfig.normalizeUrl("http://photos.example.com"))
+        assertEquals("HTTPS://Photos.Example.com:8443", ImmichConfig.normalizeUrl("HTTPS://Photos.Example.com:8443/"))
+        assertEquals("http://10.0.0.5:2283", ImmichConfig.normalizeUrl("10.0.0.5:2283"))
+        assertEquals("http://192.168.1.50", ImmichConfig.normalizeUrl("192.168.1.50"))
+        assertEquals("http://immich.local", ImmichConfig.normalizeUrl("immich.local"))
+        assertEquals("http://nas", ImmichConfig.normalizeUrl("nas"))
+        assertEquals("http://localhost:2283", ImmichConfig.normalizeUrl("localhost:2283"))
+        assertEquals("", ImmichConfig.normalizeUrl("   "))
+    }
+
+    @Test
+    fun `discovery accepts immich service type and immich-named http services only`() {
+        assertTrue(ImmichServerDiscovery.isImmichService("My Server", "_immich._tcp."))
+        assertTrue(ImmichServerDiscovery.isImmichService("Immich on NAS", "_http._tcp."))
+        assertTrue(ImmichServerDiscovery.isImmichService("my-IMMICH", "_http._tcp"))
+        assertFalse(ImmichServerDiscovery.isImmichService("Printer", "_http._tcp."))
+        assertFalse(ImmichServerDiscovery.isImmichService("Immich", "_ssh._tcp."))
+        assertFalse(ImmichServerDiscovery.isImmichService(null, null))
+        assertEquals("http://10.0.0.5:2283", DiscoveredImmichServer("n", "10.0.0.5", 2283).url)
+    }
 }

@@ -23,13 +23,7 @@
             <meta-data android:name="com.stasisstate.slatetv.plugin.SETTINGS_ACTIVITY" android:value="com.stasisstate.slatetv.plugin.immich.ImmichSettingsActivity" />
             <meta-data android:name="com.stasisstate.slatetv.plugin.API_VERSION" android:value="1" />
         </service>
-        <activity android:name=".ImmichSettingsActivity" android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
-            </intent-filter>
-        </activity>
+        <activity android:name=".ImmichSettingsActivity" android:exported="true" />
         <provider
             android:name=".ImmichMediaProvider"
             android:authorities="com.stasisstate.slatetv.plugin.immich.media"

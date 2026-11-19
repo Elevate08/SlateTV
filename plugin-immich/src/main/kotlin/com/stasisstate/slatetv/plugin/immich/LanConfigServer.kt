@@ -381,7 +381,7 @@ class LanConfigServer(
                   <label for="pin">TV Pairing PIN</label>
                   <input id="pin" name="pin" type="text" inputmode="numeric" required value="${escapeHtml(prefillPin)}" placeholder="6-digit PIN from TV"/>
                   <label for="serverUrl">Immich Server URL</label>
-                  <input id="serverUrl" name="serverUrl" type="url" required value="${escapeHtml(initialUrl)}" placeholder="http://192.168.1.50:2283"/>
+                  <input id="serverUrl" name="serverUrl" type="url" required value="${escapeHtml(initialUrl)}" placeholder="https://photos.example.com"/>
                   <label for="apiKey">Immich API Key</label>
                   <input id="apiKey" name="apiKey" type="password" required placeholder="Paste API key from Immich Account Settings"/>
                   <label class="check">

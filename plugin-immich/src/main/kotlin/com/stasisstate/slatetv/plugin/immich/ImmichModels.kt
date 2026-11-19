@@ -28,16 +28,36 @@ data class ImmichConfig(
         get() = normalizedServerUrl.isNotBlank() && apiKey.isNotBlank()
 
     companion object {
+        /**
+         * Normalizes user input into a base URL. An explicit `http://` / `https://` scheme (and any port)
+         * is always preserved. For bare input, public-looking domain names default to `https://`, while
+         * IP literals, `localhost`, single-label / private-suffix hosts (`.local`, `.lan`, ...) and
+         * hosts with an explicit non-443 port default to plain `http://` (typical for LAN Immich on :2283).
+         */
         fun normalizeUrl(raw: String): String {
             val trimmed = raw.trim().trimEnd('/')
             if (trimmed.isEmpty()) return ""
-            return if (trimmed.startsWith("http://", ignoreCase = true) ||
+            if (trimmed.startsWith("http://", ignoreCase = true) ||
                 trimmed.startsWith("https://", ignoreCase = true)
             ) {
-                trimmed
-            } else {
-                "http://$trimmed"
+                return trimmed
             }
+            return "${defaultSchemeFor(trimmed)}://$trimmed"
+        }
+
+        private val IPV4_LITERAL = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
+        private val PRIVATE_SUFFIXES = listOf(".local", ".lan", ".home", ".internal", ".home.arpa", ".localdomain")
+
+        private fun defaultSchemeFor(bare: String): String {
+            val authority = bare.substringBefore('/').substringBefore('?').substringAfterLast('@')
+            if (authority.startsWith("[")) return "http"
+            val host = authority.substringBefore(':').lowercase()
+            val port = authority.substringAfter(':', "").toIntOrNull()
+            if (port == 443) return "https"
+            if (port != null) return "http"
+            val local = host == "localhost" || IPV4_LITERAL.matches(host) || !host.contains('.') ||
+                PRIVATE_SUFFIXES.any { host.endsWith(it) }
+            return if (local) "http" else "https"
         }
     }
 }
@@ -106,4 +126,18 @@ sealed class ImmichConnectionResult {
         val isTlsError: Boolean = false,
         val isAuthError: Boolean = false,
     ) : ImmichConnectionResult()
+}
+
+/** Outcome of [ImmichApiClient.signInAndCreateApiKey]. Never carries the password or session token. */
+sealed class ImmichSignInResult {
+    /** [apiKey] is the freshly minted, scoped Immich API key; [serverUrl] is the normalized base URL. */
+    data class Success(val serverUrl: String, val apiKey: String) : ImmichSignInResult() {
+        override fun toString() = "Success(serverUrl=$serverUrl, apiKey=***)"
+    }
+
+    data class Failure(
+        val message: String,
+        val isTlsError: Boolean = false,
+        val isAuthError: Boolean = false,
+    ) : ImmichSignInResult()
 }

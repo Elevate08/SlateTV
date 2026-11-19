@@ -170,6 +170,120 @@ class ImmichApiClient(
             }
         }
 
+    /**
+     * Signs in with email + password, mints a scoped "Slate TV" API key, then discards the credentials.
+     *
+     * - `POST /api/auth/login` -> `accessToken` (held only in local variables).
+     * - `POST /api/api-keys` with `Bearer <accessToken>` and scoped permissions; retries once without
+     *   `permissions` if an older server answers HTTP 400.
+     * - Best-effort `POST /api/auth/logout` so no lingering session is left on the server.
+     * - Redirects are NOT followed (a redirect could replay the password body to another origin).
+     * - The password and token are never logged, never put into messages/results, and never stored.
+     */
+    suspend fun signInAndCreateApiKey(
+        serverUrl: String,
+        email: String,
+        password: String,
+        allowUntrustedTls: Boolean,
+    ): ImmichSignInResult = withContext(Dispatchers.IO) {
+        val base = validateServerUrl(serverUrl)
+            ?: return@withContext ImmichSignInResult.Failure(
+                "Invalid server URL. Use an address like https://photos.example.com.",
+            )
+        if (email.isBlank() || password.isEmpty()) {
+            return@withContext ImmichSignInResult.Failure("Enter your Immich email and password.")
+        }
+        val client = clientFor(ImmichConfig(serverUrl = base, allowUntrustedTls = allowUntrustedTls))
+            .newBuilder().apply { interceptors().clear() }.build()
+        var accessToken: String? = null
+        try {
+            val loginBody = JSONObject().put("email", email.trim()).put("password", password).toString()
+            accessToken = client.executeCancellable(
+                Request.Builder()
+                    .url("$base/api/auth/login")
+                    .header("Accept", "application/json")
+                    .post(loginBody.toRequestBody(JSON_MEDIA_TYPE))
+                    .build(),
+            ).use { resp ->
+                when {
+                    resp.isSuccessful -> JSONObject(readBoundedJsonBody(resp)).optString("accessToken")
+                        .takeIf { it.isNotBlank() }
+                        ?: return@withContext ImmichSignInResult.Failure("Immich did not return a session. Is this an Immich server?")
+                    resp.isRedirect -> return@withContext ImmichSignInResult.Failure(
+                        "The server redirected the sign-in request. Enter the exact address, including https:// if required.",
+                    )
+                    resp.code == 400 || resp.code == 401 -> return@withContext ImmichSignInResult.Failure(
+                        "Incorrect email or password.",
+                        isAuthError = true,
+                    )
+                    resp.code == 404 -> return@withContext ImmichSignInResult.Failure(
+                        "Immich was not found at that address (HTTP 404).",
+                    )
+                    else -> return@withContext ImmichSignInResult.Failure("Immich sign-in failed (HTTP ${resp.code}).")
+                }
+            }
+
+            val scoped = JSONObject().put("name", API_KEY_NAME)
+                .put("permissions", JSONArray(API_KEY_PERMISSIONS)).toString()
+            val legacy = JSONObject().put("name", API_KEY_NAME).toString()
+            var secret: String? = null
+            var code = 0
+            for (payload in listOf(scoped, legacy)) {
+                val (status, minted) = client.executeCancellable(
+                    Request.Builder()
+                        .url("$base/api/api-keys")
+                        .header("Authorization", "Bearer $accessToken")
+                        .header("Accept", "application/json")
+                        .post(payload.toRequestBody(JSON_MEDIA_TYPE))
+                        .build(),
+                ).use { resp ->
+                    resp.code to if (resp.isSuccessful) {
+                        JSONObject(readBoundedJsonBody(resp)).optString("secret").takeIf { it.isNotBlank() }
+                    } else {
+                        null
+                    }
+                }
+                code = status
+                secret = minted
+                if (status != 400) break // only an older server rejecting `permissions` warrants the fallback
+            }
+            when {
+                secret != null -> ImmichSignInResult.Success(base, secret)
+                code in 200..299 -> ImmichSignInResult.Failure("Immich did not return an API key.")
+                code == 401 || code == 403 -> ImmichSignInResult.Failure(
+                    "This account is not allowed to create API keys (HTTP $code).",
+                    isAuthError = true,
+                )
+                else -> ImmichSignInResult.Failure("Could not create an API key (HTTP $code).")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: SSLException) {
+            ImmichSignInResult.Failure(
+                "TLS certificate rejected. Enable 'Allow Self-Signed LAN Certs' if using a private CA.",
+                isTlsError = true,
+            )
+        } catch (_: IOException) {
+            ImmichSignInResult.Failure("Cannot reach $base. Check the address and your network.")
+        } catch (_: Exception) {
+            ImmichSignInResult.Failure("Unexpected response from Immich during sign-in.")
+        } finally {
+            accessToken?.let { token ->
+                // Best-effort server-side logout; local copies of credentials go out of scope here.
+                runCatching {
+                    client.newCall(
+                        Request.Builder()
+                            .url("$base/api/auth/logout")
+                            .header("Authorization", "Bearer $token")
+                            .post("{}".toRequestBody(JSON_MEDIA_TYPE))
+                            .build(),
+                    ).execute().close()
+                }
+            }
+            accessToken = null
+        }
+    }
+
     suspend fun listAlbums(config: ImmichConfig): List<ImmichAlbum> =
         withContext(Dispatchers.IO) {
             val base = validateServerUrl(config.serverUrl) ?: return@withContext emptyList()
@@ -492,6 +606,8 @@ class ImmichApiClient(
             listOf("Content-Type", "Content-Length", "Content-Encoding", "Content-Language", "Transfer-Encoding")
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val ROTATED_EXIF_ORIENTATIONS = setOf("5", "6", "7", "8")
+        private const val API_KEY_NAME = "Slate TV"
+        private val API_KEY_PERMISSIONS = listOf("album.read", "asset.read", "asset.view")
         private const val MAX_RECENT_PAGES = 10
         private const val MAX_JSON_BYTES = 4L * 1024 * 1024
 
