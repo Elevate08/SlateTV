@@ -38,6 +38,26 @@ internal class JellyfinLogoCache(private val context: Context) {
         imageTag: String?,
         grantPackage: String,
         namespace: String,
+    ): Uri? = publishCached(imageUrl, imageTag, grantPackage, namespace) { api.downloadImageBytes(imageUrl, MAX_LOGO_BYTES) }
+
+    /**
+     * Publishes a System Live Channels logo (read from the TV provider by [load]) under a daily
+     * revision tag so changed station logos eventually refresh.
+     */
+    suspend fun publishSystemLogo(
+        logoUri: String,
+        grantPackage: String,
+        load: () -> ByteArray?,
+    ): Uri? = publishCached(
+        logoUri, (System.currentTimeMillis() / 86_400_000L).toString(), grantPackage, "system-live-channels",
+    ) { load() }
+
+    private suspend fun publishCached(
+        imageUrl: String,
+        imageTag: String?,
+        grantPackage: String,
+        namespace: String,
+        download: suspend () -> ByteArray?,
     ): Uri? {
         val name = cacheKeyFor(namespace, imageUrl, imageTag)
         val folder = logoDirectory(context)
@@ -54,7 +74,7 @@ internal class JellyfinLogoCache(private val context: Context) {
         }
         if (existing != null) return existing
 
-        val bytes = api.downloadImageBytes(imageUrl, MAX_LOGO_BYTES) ?: return null
+        val bytes = download() ?: return null
         if (bytes.isEmpty() || bytes.size > MAX_LOGO_BYTES) return null
 
         return synchronized(cacheLock) {

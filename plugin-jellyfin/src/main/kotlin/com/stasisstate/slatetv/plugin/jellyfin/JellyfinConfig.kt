@@ -13,6 +13,9 @@ import javax.crypto.spec.GCMParameterSpec
 
 enum class CardTapAction { OPEN_GUIDE, LAUNCH_JELLYFIN }
 
+/** Where Live TV channels come from: the Android TV system EPG (no login) or a Jellyfin server. */
+enum class LiveTvSourceMode { SYSTEM_LIVE_CHANNELS, JELLYFIN_SERVER }
+
 data class JellyfinConfig(
     val serverUrl: String = "",
     val apiKey: String = "",
@@ -21,9 +24,15 @@ data class JellyfinConfig(
     val favoritesOnly: Boolean = false,
     val cardTapAction: CardTapAction = CardTapAction.OPEN_GUIDE,
     val allowUntrustedTls: Boolean = false,
+    val sourceMode: LiveTvSourceMode = LiveTvSourceMode.SYSTEM_LIVE_CHANNELS,
 ) {
-    override fun toString() = "JellyfinConfig(maxHomeChannels=$maxHomeChannels, favoritesOnly=$favoritesOnly, cardTapAction=$cardTapAction)"
+    override fun toString() = "JellyfinConfig(sourceMode=$sourceMode, maxHomeChannels=$maxHomeChannels, favoritesOnly=$favoritesOnly, cardTapAction=$cardTapAction)"
 }
+
+/** Mode used when nothing was saved: existing configured installs keep Jellyfin, new installs use the system EPG. */
+internal fun defaultSourceMode(savedMode: String?, savedServer: String): LiveTvSourceMode =
+    savedMode?.let { runCatching { LiveTvSourceMode.valueOf(it) }.getOrNull() }
+        ?: if (savedServer.isNotBlank()) LiveTvSourceMode.JELLYFIN_SERVER else LiveTvSourceMode.SYSTEM_LIVE_CHANNELS
 
 internal fun parseServerUrl(value: String) = value.trim().takeIf { it.length <= 1500 }
     ?.toHttpUrlOrNull()?.takeIf {
@@ -37,31 +46,40 @@ class JellyfinConfigStore(context: Context) {
     private val prefs = context.getSharedPreferences("jellyfin", Context.MODE_PRIVATE)
 
     fun load(): JellyfinConfig = synchronized(lock) {
+        val server = prefs.getString("server", "").orEmpty()
         JellyfinConfig(
-            prefs.getString("server", "").orEmpty(),
+            server,
             runCatching { decrypt(prefs.getString("encryptedKey", "").orEmpty()) }.getOrDefault(""),
             prefs.getString("user", "").orEmpty(),
             prefs.getInt("limit", 12),
             prefs.getBoolean("favorites", false),
             if (prefs.getBoolean("launchApp", false)) CardTapAction.LAUNCH_JELLYFIN else CardTapAction.OPEN_GUIDE,
             prefs.getBoolean("lanTls", false),
+            defaultSourceMode(prefs.getString("sourceMode", null), server),
         )
     }
 
+    /**
+     * Persists [config]. A blank server URL / API key is allowed (System Live Channels needs neither);
+     * a non-blank value must be valid.
+     */
     fun save(config: JellyfinConfig) = synchronized(lock) {
-        val server = requireNotNull(parseServerUrl(config.serverUrl))
-        require(validApiKey(config.apiKey))
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key(create = true))
-        val encrypted = Base64.getEncoder().encodeToString(cipher.iv + cipher.doFinal(config.apiKey.toByteArray()))
+        val server = config.serverUrl.trim().takeIf { it.isNotEmpty() }?.let { requireNotNull(parseServerUrl(it)) }
+        require(config.apiKey.isEmpty() || validApiKey(config.apiKey))
+        val encrypted = if (config.apiKey.isEmpty()) "" else {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, key(create = true))
+            Base64.getEncoder().encodeToString(cipher.iv + cipher.doFinal(config.apiKey.toByteArray()))
+        }
         check(prefs.edit()
-            .putString("server", server.toString())
+            .putString("server", server?.toString().orEmpty())
             .putString("encryptedKey", encrypted)
             .putString("user", config.userId)
             .putInt("limit", config.maxHomeChannels)
             .putBoolean("favorites", config.favoritesOnly)
             .putBoolean("launchApp", config.cardTapAction == CardTapAction.LAUNCH_JELLYFIN)
             .putBoolean("lanTls", config.allowUntrustedTls)
+            .putString("sourceMode", config.sourceMode.name)
             .commit())
     }
 

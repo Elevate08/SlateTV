@@ -3,6 +3,7 @@ package com.stasisstate.slatetv.plugin.jellyfin
 import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.tv.TvContract
 import android.os.Binder
 import android.os.Build
 import android.os.Bundle
@@ -87,8 +88,8 @@ class JellyfinShelfPluginService : Service() {
         override fun getApiVersion() = PluginContract.API_VERSION
 
         override fun getShelfInfo() = ShelfPluginInfo(
-            "com.stasisstate.slatetv.plugin.jellyfin.livetv", "Jellyfin Live TV",
-            "Live TV channels and program guide from your Jellyfin server", "1.0.0",
+            "com.stasisstate.slatetv.plugin.jellyfin.livetv", "Live TV & Guide",
+            "Live TV channels and program guide from Android TV Live Channels or your Jellyfin server", "1.0.0",
             JellyfinSettingsActivity::class.java.name, JellyfinGuideActivity::class.java.name,
         )
 
@@ -125,8 +126,60 @@ class JellyfinShelfPluginService : Service() {
      */
     private suspend fun shelf(): ShelfPayload? {
         val config = JellyfinConfigStore(applicationContext).load()
+        if (config.sourceMode == LiveTvSourceMode.SYSTEM_LIVE_CHANNELS) {
+            if (!hasTvListingsPermission(applicationContext)) return unavailable("Grant Live TV listings access in Settings.")
+            return shelfCache.getFetch(config, ::fetchSystemShelf)
+        }
         if (config.serverUrl.isBlank() || config.apiKey.isBlank()) return unavailable("Configure Jellyfin first.")
         return shelfCache.getFetch(config, ::fetchShelf)
+    }
+
+    private suspend fun fetchSystemShelf(config: JellyfinConfig): ShelfFetch {
+        if (!hasTvListingsPermission(applicationContext)) return ShelfFetch(unavailable("Grant Live TV listings access in Settings."))
+        val reader = ContentResolverTvListingsReader(applicationContext.contentResolver)
+        val result = withContext(Dispatchers.IO) { SystemTvChannelsSource(reader).load() }
+        val ready = when (result) {
+            SystemTvResult.NeedsPermission -> return ShelfFetch(unavailable("Grant Live TV listings access in Settings."))
+            is SystemTvResult.Ready -> result
+        }
+        val channels = ready.channels.take(config.maxHomeChannels.coerceIn(1, 24))
+        if (channels.isEmpty()) return ShelfFetch(unavailable("No Live Channels found. Set up channels in Android TV Live Channels."))
+        val now = Instant.now()
+        val inGuide = config.cardTapAction == CardTapAction.OPEN_GUIDE
+
+        val proxied = proxyLogos(
+            channels = channels,
+            idOf = { it.id },
+            rawUrlOf = { TvContract.buildChannelLogoUri(it.id.toLong())?.toString() },
+            semaphore = logoSemaphore,
+        ) { channel, rawUrl ->
+            logoCache.publishSystemLogo(rawUrl, SLATE_PACKAGE) { reader.logoBytes(channel.id.toLong()) }?.toString()
+        }
+        val items = channels.map { channel ->
+            val program = channel.current
+            ShelfItem(
+                id = channel.id.take(128),
+                title = channel.name.take(120),
+                subtitle = listOfNotNull(program?.title, program?.remainingTime(now)).joinToString(" · ").take(160)
+                    .ifBlank { null },
+                channelNumber = channel.number?.take(16),
+                badge = if (program?.isLive == true) "LIVE" else null,
+                imageUri = proxied.logos[channel.id],
+                imageHeaders = Bundle(),
+                progressPercent = program?.progressPercent(now) ?: -1,
+                startTimeEpochMs = program?.start?.toEpochMilli() ?: 0,
+                endTimeEpochMs = program?.end?.toEpochMilli() ?: 0,
+                launchPackageName = packageName,
+                launchActivityClassName = if (inGuide) JellyfinGuideActivity::class.java.name else TuneChannelActivity::class.java.name,
+                launchExtras = Bundle().apply {
+                    if (inGuide) putString(CHANNEL_ID, channel.id) else putLong(EXTRA_TIF_CHANNEL_ID, channel.id.toLong())
+                },
+            )
+        }.distinctBy(ShelfItem::id)
+        return ShelfFetch(
+            ShelfPayload(true, "Live TV · On Now", items, guideActivityClassName = JellyfinGuideActivity::class.java.name),
+            hasMissingLogos = proxied.hasMissingLogos,
+        )
     }
 
     private suspend fun fetchShelf(config: JellyfinConfig): ShelfFetch {

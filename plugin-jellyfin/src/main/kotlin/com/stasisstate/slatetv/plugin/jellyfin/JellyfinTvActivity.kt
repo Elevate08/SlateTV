@@ -55,6 +55,12 @@ abstract class JellyfinTvActivity : AppCompatActivity() {
         if (!opened) Toast.makeText(this, "Install Jellyfin for Android TV to watch channels.", Toast.LENGTH_LONG).show()
     }
 
+    protected fun tuneChannel(channelId: Long) {
+        if (!tuneSystemChannel(this, channelId)) {
+            Toast.makeText(this, "Could not open Live Channels for this channel.", Toast.LENGTH_LONG).show()
+        }
+    }
+
     protected fun focusBackground() = StateListDrawable().apply {
         addState(intArrayOf(android.R.attr.state_focused), tile(0xff294860.toInt(), 0xff78dcf0.toInt()))
         addState(intArrayOf(), tile(0xff19263a.toInt(), 0xff28384d.toInt()))

@@ -12,6 +12,8 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.time.Instant
@@ -29,6 +31,7 @@ class JellyfinGuideActivity : JellyfinTvActivity() {
     private var selectedChannel: String? = null
     private var activeApi: JellyfinApiClient? = null
     private var activeUserId: String? = null
+    private var systemMode = false
     private var pagination = GuidePaginationState()
     private val loadedChannels = mutableListOf<Channel>()
     private val upcomingByChannel = mutableMapOf<String, Program>()
@@ -82,9 +85,16 @@ class JellyfinGuideActivity : JellyfinTvActivity() {
         loadMoreButton.visibility = View.GONE
         load = scope.launch {
             status.visibility = View.VISIBLE
-            status.text = "Loading Jellyfin Live TV…"
+            status.text = "Loading Live TV…"
             try {
                 val config = JellyfinConfigStore(applicationContext).load()
+                systemMode = config.sourceMode == LiveTvSourceMode.SYSTEM_LIVE_CHANNELS
+                activeApi = null
+                activeUserId = null
+                if (systemMode) {
+                    loadSystemChannels()
+                    return@launch
+                }
                 if (config.apiKey.isBlank() || config.serverUrl.isBlank()) {
                     empty("Open Settings to connect your Jellyfin server.")
                     return@launch
@@ -113,6 +123,29 @@ class JellyfinGuideActivity : JellyfinTvActivity() {
                 throw cancelled
             } catch (_: Exception) {
                 empty("Could not load Live TV. Check Settings or select Refresh.")
+            }
+        }
+    }
+
+    private suspend fun loadSystemChannels() {
+        if (!hasTvListingsPermission(applicationContext)) {
+            empty("Open Settings and select Grant Live TV Listings Access.")
+            return
+        }
+        val result = withContext(Dispatchers.IO) { systemTvSource(applicationContext).load() }
+        when (result) {
+            SystemTvResult.NeedsPermission -> empty("Open Settings and select Grant Live TV Listings Access.")
+            is SystemTvResult.Ready -> {
+                if (result.channels.isEmpty()) {
+                    empty("No Live Channels found. Set up channels in Android TV Live Channels.")
+                    return
+                }
+                loadedChannels.addAll(result.channels)
+                upcomingByChannel.putAll(result.upcoming)
+                pagination.onPageLoaded(result.channels.size, result.channels.size, result.channels.size)
+                status.visibility = View.GONE
+                updateLoadMoreButton()
+                render(focusSelected = true)
             }
         }
     }
@@ -264,7 +297,9 @@ class JellyfinGuideActivity : JellyfinTvActivity() {
             holder.upNextView.text = upcoming?.let { "Up next · ${timeFormat.format(it.start)}\n${it.title}" }
                 ?: "Up next · —"
 
-            holder.itemView.setOnClickListener { launchJellyfin() }
+            holder.itemView.setOnClickListener {
+                if (systemMode) tuneChannel(channel.id.toLongOrNull() ?: -1L) else launchJellyfin()
+            }
             holder.itemView.setOnFocusChangeListener { _, focused ->
                 if (focused) {
                     selectedChannel = channel.id

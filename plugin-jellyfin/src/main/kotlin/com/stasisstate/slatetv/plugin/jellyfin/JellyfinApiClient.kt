@@ -1,8 +1,11 @@
 package com.stasisstate.slatetv.plugin.jellyfin
 
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -84,13 +87,9 @@ private fun JSONObject.items() = optJSONArray("Items")?.objects().orEmpty()
 private val BODY_REPRESENTATION_HEADERS =
     listOf("Content-Type", "Content-Length", "Content-Encoding", "Content-Language", "Transfer-Encoding")
 
-class JellyfinApiClient(private val config: JellyfinConfig) {
-    private val base = requireNotNull(parseServerUrl(config.serverUrl)) { "Enter a valid Jellyfin server URL." }
-    init { require(validApiKey(config.apiKey)) { "Enter a valid API key." } }
-
-    val authorization = """MediaBrowser Client="Slate TV Jellyfin", Device="Android TV", DeviceId="slatetv-jellyfin", Version="1.0.0", Token="${config.apiKey}""""
-    private val insecureLan = config.allowUntrustedTls && base.isHttps
-    internal val client = OkHttpClient.Builder()
+/** Shared LAN-safe client: bounded timeouts, origin-pinned redirects, private-address enforcement for cleartext / untrusted TLS. */
+internal fun buildJellyfinHttpClient(base: HttpUrl, insecureLan: Boolean): OkHttpClient {
+    return OkHttpClient.Builder()
         .connectTimeout(6, SECONDS).readTimeout(10, SECONDS).callTimeout(15, SECONDS)
         .followRedirects(false).followSslRedirects(false)
         .addInterceptor { chain ->
@@ -148,6 +147,15 @@ class JellyfinApiClient(private val config: JellyfinConfig) {
                 hostnameVerifier { host, _ -> host == base.host }
             }
         }.build()
+}
+
+class JellyfinApiClient(private val config: JellyfinConfig) {
+    private val base = requireNotNull(parseServerUrl(config.serverUrl)) { "Enter a valid Jellyfin server URL." }
+    init { require(validApiKey(config.apiKey)) { "Enter a valid API key." } }
+
+    val authorization = """MediaBrowser Client="Slate TV Jellyfin", Device="Android TV", DeviceId="slatetv-jellyfin", Version="1.0.0", Token="${config.apiKey}""""
+    private val insecureLan = config.allowUntrustedTls && base.isHttps
+    internal val client = buildJellyfinHttpClient(base, insecureLan)
 
     suspend fun serverName() = JSONObject(get("System/Info/Public")!!).string("ServerName") ?: "Jellyfin"
 
@@ -260,38 +268,121 @@ class JellyfinApiClient(private val config: JellyfinConfig) {
         }
     }
 
-    private fun url(path: String) = base.newBuilder().apply {
-        if (base.encodedPath.endsWith("/")) removePathSegment(base.pathSegments.lastIndex)
-        addPathSegments(path)
-    }
+    private fun url(path: String) = jellyfinUrl(base, path)
 
     private suspend fun get(path: String, query: Map<String, String> = emptyMap(), allowedErrors: Set<Int> = emptySet()): String? {
         val url = url(path).apply { query.forEach { (key, value) -> addQueryParameter(key, value) } }.build()
-        val request = Request.Builder().url(url).header("Authorization", authorization).build()
-        return suspendCancellableCoroutine { continuation ->
-            val call = client.newCall(request)
-            continuation.invokeOnCancellation { call.cancel() }
-            call.enqueue(object : Callback {
-                override fun onFailure(call: Call, e: IOException) = continuation.resumeWithException(e)
-                override fun onResponse(call: Call, response: Response) {
-                    val result = runCatching {
-                        response.use {
-                            when {
-                                it.code in allowedErrors -> null
-                                !it.isSuccessful -> throw IOException("Jellyfin returned HTTP ${it.code}.")
-                                else -> {
-                                    val source = it.body?.source() ?: throw IOException("Empty Jellyfin response.")
-                                    if (source.request(4L * 1024 * 1024 + 1)) throw IOException("Jellyfin response is too large.")
-                                    source.readUtf8()
-                                }
+        return client.fetchText(Request.Builder().url(url).header("Authorization", authorization).build(), allowedErrors)
+    }
+
+    companion object {
+        private const val QUICK_CONNECT_CLIENT =
+            """MediaBrowser Client="Slate TV Jellyfin", Device="Android TV", DeviceId="slatetv-jellyfin", Version="1.0.0""""
+
+        private fun quickConnectBase(serverUrl: String) =
+            requireNotNull(parseServerUrl(serverUrl)) { "Enter a valid Jellyfin server URL." }
+
+        private fun quickConnectClient(base: HttpUrl, allowUntrustedTls: Boolean) =
+            buildJellyfinHttpClient(base, allowUntrustedTls && base.isHttps)
+
+        private fun quickConnectRequest(base: HttpUrl, path: String, query: Map<String, String> = emptyMap()) =
+            Request.Builder().url(jellyfinUrl(base, path).apply { query.forEach { (k, v) -> addQueryParameter(k, v) } }.build())
+                .header("Authorization", QUICK_CONNECT_CLIENT)
+
+        /** `POST /QuickConnect/Initiate`: returns the polling secret and the 6-digit code the user approves in another Jellyfin app. */
+        suspend fun initiateQuickConnect(serverUrl: String, allowUntrustedTls: Boolean = false): QuickConnectSession {
+            val base = quickConnectBase(serverUrl)
+            val request = quickConnectRequest(base, "QuickConnect/Initiate")
+                .post("".toRequestBody(JSON_MEDIA_TYPE)).build()
+            val body = quickConnectClient(base, allowUntrustedTls)
+                .fetchText(request, setOf(401, 403, 404)) ?: throw IOException("Quick Connect is not enabled on this Jellyfin server.")
+            val json = JSONObject(body)
+            val secret = json.string("Secret")
+            val code = json.string("Code")
+            if (secret == null || code == null) throw IOException("Jellyfin returned an invalid Quick Connect response.")
+            return QuickConnectSession(secret, code)
+        }
+
+        /** `GET /QuickConnect/Connect?secret=…`: true once the code was approved. */
+        suspend fun pollQuickConnect(serverUrl: String, secret: String, allowUntrustedTls: Boolean = false): Boolean {
+            val base = quickConnectBase(serverUrl)
+            val request = quickConnectRequest(base, "QuickConnect/Connect", mapOf("secret" to secret)).get().build()
+            val body = quickConnectClient(base, allowUntrustedTls)
+                .fetchText(request, setOf(404)) ?: throw IOException("Quick Connect request expired.")
+            return JSONObject(body).optBoolean("Authenticated", false)
+        }
+
+        /** `POST /Users/AuthenticateWithQuickConnect`: exchanges an approved secret for an access token and user id. */
+        suspend fun authenticateWithQuickConnect(serverUrl: String, secret: String, allowUntrustedTls: Boolean = false): QuickConnectAuth {
+            val base = quickConnectBase(serverUrl)
+            val payload = JSONObject().put("Secret", secret).toString()
+            val request = quickConnectRequest(base, "Users/AuthenticateWithQuickConnect")
+                .post(payload.toRequestBody(JSON_MEDIA_TYPE)).build()
+            val json = JSONObject(quickConnectClient(base, allowUntrustedTls).fetchText(request)!!)
+            val token = json.string("AccessToken")?.takeIf(::validApiKey)
+            val userId = json.optJSONObject("User")?.string("Id")
+            if (token == null || userId == null) throw IOException("Jellyfin returned an invalid sign-in response.")
+            return QuickConnectAuth(token, userId)
+        }
+
+        /**
+         * Polls until the code is approved, then signs in. Returns `null` if [timeoutMs] elapses first.
+         * Cancel the calling coroutine to abort.
+         */
+        suspend fun awaitQuickConnect(
+            serverUrl: String,
+            secret: String,
+            allowUntrustedTls: Boolean = false,
+            pollIntervalMs: Long = 3_000,
+            timeoutMs: Long = 300_000,
+        ): QuickConnectAuth? {
+            var waited = 0L
+            while (waited <= timeoutMs) {
+                if (pollQuickConnect(serverUrl, secret, allowUntrustedTls)) {
+                    return authenticateWithQuickConnect(serverUrl, secret, allowUntrustedTls)
+                }
+                delay(pollIntervalMs)
+                waited += pollIntervalMs
+            }
+            return null
+        }
+    }
+}
+
+data class QuickConnectSession(val secret: String, val code: String)
+data class QuickConnectAuth(val accessToken: String, val userId: String)
+
+private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
+private fun HttpUrl.origin() = Triple(scheme, host, port)
+
+private fun jellyfinUrl(base: HttpUrl, path: String) = base.newBuilder().apply {
+    if (base.encodedPath.endsWith("/")) removePathSegment(base.pathSegments.lastIndex)
+    addPathSegments(path)
+}
+
+/** Executes [request] and returns its body (≤4 MiB), `null` for an [allowedErrors] status, or throws [IOException]. */
+internal suspend fun OkHttpClient.fetchText(request: Request, allowedErrors: Set<Int> = emptySet()): String? =
+    suspendCancellableCoroutine { continuation ->
+        val call = newCall(request)
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) = continuation.resumeWithException(e)
+            override fun onResponse(call: Call, response: Response) {
+                val result = runCatching {
+                    response.use {
+                        when {
+                            it.code in allowedErrors -> null
+                            !it.isSuccessful -> throw IOException("Jellyfin returned HTTP ${it.code}.")
+                            else -> {
+                                val source = it.body?.source() ?: throw IOException("Empty Jellyfin response.")
+                                if (source.request(4L * 1024 * 1024 + 1)) throw IOException("Jellyfin response is too large.")
+                                source.readUtf8()
                             }
                         }
                     }
-                    continuation.resumeWith(result)
                 }
-            })
-        }
+                continuation.resumeWith(result)
+            }
+        })
     }
-
-    private fun HttpUrl.origin() = Triple(scheme, host, port)
-}
