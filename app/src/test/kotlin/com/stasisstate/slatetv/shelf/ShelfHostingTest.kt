@@ -227,9 +227,19 @@ class ShelfHostingTest {
         runCurrent()
         assertEquals(listOf("enabled"), manager.shelves.value.map { it.plugin.id })
         assertEquals(0, disabled.calls)
-        advanceTimeBy(60_000)
+        // "failing" is transient: short retries at +4s and +10s, then back to the 60s poll.
+        advanceTimeBy(4_000)
         runCurrent()
         assertEquals(2, enabled.calls)
+        advanceTimeBy(10_000)
+        runCurrent()
+        assertEquals(3, enabled.calls)
+        advanceTimeBy(59_999)
+        runCurrent()
+        assertEquals(3, enabled.calls)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(4, enabled.calls)
 
         disabledIds = setOf(enabled.metadata.id)
         manager.refresh()
@@ -285,16 +295,136 @@ class ShelfHostingTest {
         manager.stop()
     }
 
+    @Test
+    fun transientNullSchedulesShortRetriesAndRecoversBeforeFullPoll() = runTest {
+        val flaky = Provider("flaky")
+        val manager = ShelfManager(
+            backgroundScope,
+            ShelfPluginRegistry { listOf(flaky) },
+            ioDispatcher = StandardTestDispatcher(testScheduler),
+        ) { emptySet() }
+
+        manager.start()
+        runCurrent()
+        assertEquals(1, flaky.calls)
+        assertEquals(60_000L, manager.nextDelayMs())
+
+        // Shield wake: plugin returns null (transient). Shelf is preserved and a 4s retry is scheduled.
+        flaky.returnNull = true
+        manager.refresh()
+        runCurrent()
+        assertEquals(2, flaky.calls)
+        assertEquals(listOf("flaky"), manager.shelves.value.map { it.plugin.id })
+        assertEquals(4_000L, manager.nextDelayMs())
+
+        advanceTimeBy(3_999)
+        runCurrent()
+        assertEquals(2, flaky.calls)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(3, flaky.calls)
+        assertEquals(listOf("flaky"), manager.shelves.value.map { it.plugin.id })
+        assertEquals(10_000L, manager.nextDelayMs())
+
+        // Second retry after 10s recovers well before the 60s poll; cadence returns to normal.
+        flaky.returnNull = false
+        advanceTimeBy(9_999)
+        runCurrent()
+        assertEquals(3, flaky.calls)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(4, flaky.calls)
+        assertEquals(listOf("flaky"), manager.shelves.value.map { it.plugin.id })
+        assertEquals(60_000L, manager.nextDelayMs())
+        advanceTimeBy(59_999)
+        runCurrent()
+        assertEquals(4, flaky.calls)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(5, flaky.calls)
+        manager.stop()
+    }
+
+    @Test
+    fun shortRetryStopsAfterGraceWindowAndConfirmedUnavailableHidesWithoutRetry() = runTest {
+        val flaky = Provider("flaky")
+        val manager = ShelfManager(
+            backgroundScope,
+            ShelfPluginRegistry { listOf(flaky) },
+            ioDispatcher = StandardTestDispatcher(testScheduler),
+        ) { emptySet() }
+
+        manager.start()
+        runCurrent()
+        flaky.returnNull = true
+        manager.refresh()
+        runCurrent()
+        advanceTimeBy(4_000)
+        runCurrent()
+        advanceTimeBy(10_000)
+        runCurrent()
+        // Third consecutive transient failure: shelf hidden and back to the normal 60s poll.
+        assertEquals(4, flaky.calls)
+        assertTrue(manager.shelves.value.isEmpty())
+        assertEquals(60_000L, manager.nextDelayMs())
+        advanceTimeBy(59_999)
+        runCurrent()
+        assertEquals(4, flaky.calls)
+
+        // Confirmed available=false hides immediately and does not schedule a short retry.
+        flaky.returnNull = false
+        manager.refresh()
+        runCurrent()
+        assertEquals(listOf("flaky"), manager.shelves.value.map { it.plugin.id })
+        flaky.result = flaky.result.copy(available = false, items = emptyList())
+        manager.refresh()
+        runCurrent()
+        assertTrue(manager.shelves.value.isEmpty())
+        assertEquals(60_000L, manager.nextDelayMs())
+        manager.stop()
+    }
+
+    @Test
+    fun stopCancelsPendingShortRetry() = runTest {
+        val flaky = Provider("flaky")
+        val manager = ShelfManager(
+            backgroundScope,
+            ShelfPluginRegistry { listOf(flaky) },
+            ioDispatcher = StandardTestDispatcher(testScheduler),
+        ) { emptySet() }
+
+        manager.start()
+        runCurrent()
+        flaky.returnNull = true
+        manager.refresh()
+        runCurrent()
+        assertEquals(4_000L, manager.nextDelayMs())
+        manager.stop()
+        assertEquals(60_000L, manager.nextDelayMs())
+        advanceTimeBy(120_000)
+        runCurrent()
+        assertEquals(2, flaky.calls)
+        // Shelf from before stop is still shown; a fresh start fetches immediately.
+        assertEquals(listOf("flaky"), manager.shelves.value.map { it.plugin.id })
+        flaky.returnNull = false
+        manager.start()
+        runCurrent()
+        assertEquals(3, flaky.calls)
+        assertEquals(60_000L, manager.nextDelayMs())
+        manager.stop()
+    }
+
     private class Provider(id: String, override val legacyManifestId: String? = null) : ShelfPlugin, LegacyManifestIdClaimant {
         override val metadata = ShelfPluginMetadata(id, id, "", "1", "example.tv")
         var calls = 0
         var fail = false
+        var returnNull = false
         var result = ShelfData(true, id, listOf(ShelfCard("one", "Channel One")))
 
-        override suspend fun fetchShelf(): ShelfData {
+        override suspend fun fetchShelf(): ShelfData? {
             calls++
             check(!fail)
-            return result
+            return if (returnNull) null else result
         }
     }
 

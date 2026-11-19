@@ -16,6 +16,8 @@ internal data class HomeShelf(val plugin: ShelfPluginMetadata, val data: ShelfDa
  * - Runs PackageManager discovery on [Dispatchers.IO] (never blocks UI thread).
  * - Preserves the last good shelf across up to [MAX_TRANSIENT_FAILURES] consecutive null/timeout
  *   fetches so a brief DHCP hiccup after Shield wake doesn't make the Live TV shelf vanish.
+ * - After a transient (null) fetch, schedules a short retry ([TRANSIENT_RETRY_DELAYS_MS]) instead of
+ *   waiting the full [POLL_INTERVAL_MS] so the shelf recovers quickly once the network is back.
  * - Immediately hides a shelf if the plugin explicitly reports `available == false` or is disabled.
  */
 internal class ShelfManager(
@@ -35,7 +37,7 @@ internal class ShelfManager(
         foregroundJob = scope.launch {
             while (isActive) {
                 refreshOnce()
-                withTimeoutOrNull(60_000) { requests.receive() }
+                withTimeoutOrNull(nextDelayMs()) { requests.receive() }
             }
         }
     }
@@ -44,7 +46,14 @@ internal class ShelfManager(
         foregroundJob?.cancel()
         foregroundJob = null
         requests.tryReceive()
+        transientFailures.clear()
     }
+
+    /** Short retry while any plugin is within its transient-failure grace window, else the normal poll. */
+    internal fun nextDelayMs(): Long = transientFailures.values
+        .filter { it in 1..MAX_TRANSIENT_FAILURES }
+        .minOfOrNull { TRANSIENT_RETRY_DELAYS_MS[it - 1] }
+        ?: POLL_INTERVAL_MS
 
     fun refresh() {
         val disabled = disabledIds()
@@ -101,5 +110,7 @@ internal class ShelfManager(
 
     private companion object {
         const val MAX_TRANSIENT_FAILURES = 2
+        const val POLL_INTERVAL_MS = 60_000L
+        val TRANSIENT_RETRY_DELAYS_MS = longArrayOf(4_000L, 10_000L)
     }
 }

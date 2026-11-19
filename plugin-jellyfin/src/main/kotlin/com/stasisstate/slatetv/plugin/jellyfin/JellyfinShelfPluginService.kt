@@ -29,12 +29,12 @@ class JellyfinShelfPluginService : Service() {
             JellyfinSettingsActivity::class.java.name, JellyfinGuideActivity::class.java.name,
         )
 
-        override fun getShelfPayload(options: Bundle?): ShelfPayload {
+        override fun getShelfPayload(options: Bundle?): ShelfPayload? {
             if (!isCallerAuthorized(Binder.getCallingUid())) {
                 return unavailable("Slate TV access required.")
             }
-            return runCatching { runBlocking { shelf() } }
-                .getOrElse { unavailable("Could not load Jellyfin Live TV.") }
+            // Unexpected failures are transient: null lets the host keep its last good shelf.
+            return runCatching { runBlocking { shelf() } }.getOrNull()
         }
     }
 
@@ -55,49 +55,15 @@ class JellyfinShelfPluginService : Service() {
         )
     }
 
-    private suspend fun shelf(): ShelfPayload {
+    /**
+     * Returns a confirmed payload, an eligible stale success, or `null` for a transient failure
+     * (cold refresh still running, timeout, network error) so the host keeps its previous shelf
+     * and schedules a short retry instead of hiding Live TV.
+     */
+    private suspend fun shelf(): ShelfPayload? {
         val config = JellyfinConfigStore(applicationContext).load()
-        val (refresh, cached) = synchronized(cacheLock) {
-            if (snapshot != config) {
-                pending?.cancel()
-                pending = null
-                lastPayload = null
-                snapshot = config
-            }
-            if (config.serverUrl.isBlank() || config.apiKey.isBlank()) return unavailable("Configure Jellyfin first.")
-
-            val age = SystemClock.elapsedRealtime() - completedAt
-            val last = lastPayload
-            val freshTtl = if (last?.available == true) SUCCESS_FRESH_MS else FAILURE_FRESH_MS
-            if (last != null && age < freshTtl) return last
-            val cached = last?.takeIf { it.available && age <= SUCCESS_STALE_MS }
-
-            val generation = snapshot
-            val refresh = pending ?: refreshScope.async(start = CoroutineStart.LAZY) {
-                val payload = try {
-                    withTimeout(25_000) { fetchShelf(config) }
-                } catch (_: TimeoutCancellationException) {
-                    unavailable("Jellyfin took too long to respond.")
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
-                    unavailable("Could not load Jellyfin Live TV.")
-                }
-                synchronized(cacheLock) {
-                    if (snapshot === generation) {
-                        lastPayload = payload
-                        completedAt = SystemClock.elapsedRealtime()
-                        pending = null
-                    }
-                }
-                payload
-            }.also {
-                pending = it
-                it.start()
-            }
-            refresh to cached
-        }
-        return withTimeoutOrNull(3_300) { refresh.await() } ?: cached ?: unavailable("Loading Jellyfin Live TV.")
+        if (config.serverUrl.isBlank() || config.apiKey.isBlank()) return unavailable("Configure Jellyfin first.")
+        return shelfCache.get(config, ::fetchShelf)
     }
 
     private suspend fun fetchShelf(config: JellyfinConfig): ShelfPayload {
@@ -148,16 +114,8 @@ class JellyfinShelfPluginService : Service() {
     private fun unavailable(reason: String) = ShelfPayload(false, "Live TV", emptyList(), reason)
 
     private companion object {
-        const val SUCCESS_FRESH_MS = 45_000L
-        const val SUCCESS_STALE_MS = 90_000L
-        const val FAILURE_FRESH_MS = 3_000L
-
         val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        val cacheLock = Any()
-        var snapshot: JellyfinConfig? = null
-        var pending: Deferred<ShelfPayload>? = null
-        var lastPayload: ShelfPayload? = null
-        var completedAt = 0L
+        val shelfCache = JellyfinShelfCache(refreshScope, SystemClock::elapsedRealtime)
     }
 }
 
