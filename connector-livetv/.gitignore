@@ -1,0 +1,2 @@
+# Throwaway localhost test certificates (no secrets) used by LiveTvTofuTlsTest.
+!src/test/resources/*.p12

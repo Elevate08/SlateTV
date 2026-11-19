@@ -27,3 +27,4 @@ include(":plugin-sample-external")
 include(":app")
 
 include(":plugin-jellyfin")
+include(":connector-livetv")
