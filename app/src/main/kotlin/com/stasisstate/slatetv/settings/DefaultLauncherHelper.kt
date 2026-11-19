@@ -80,9 +80,12 @@ object DefaultLauncherHelper {
             null
         }
 
-    private fun isRoleHeld(context: Context): Boolean = runCatching {
-        roleManager(context)?.isRoleHeld(RoleManager.ROLE_HOME) == true
-    }.getOrDefault(false)
+    private fun isRoleHeld(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
+        return runCatching {
+            roleManager(context)?.isRoleHeld(RoleManager.ROLE_HOME) == true
+        }.getOrDefault(false)
+    }
 
     private fun resolveHomeActivityPackage(context: Context): String? {
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)

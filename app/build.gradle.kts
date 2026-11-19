@@ -3,6 +3,7 @@ import java.util.Properties
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.play.publisher)
 }
 
 // Optional upload-key signing (Stasis State convention): read from untracked keystore.properties
@@ -30,7 +31,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "1.0.0"
+        versionName = "1.0.0-beta.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -102,4 +103,29 @@ dependencies {
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.runner)
+}
+
+// Uploads through the Google Play Developer API with the Stasis State service account. The key path lives in
+// ~/.gradle/gradle.properties (playServiceAccountKey=...). Track defaults to closed testing ("alpha").
+// See docs/play/publishing.md.
+play {
+    providers.gradleProperty("playServiceAccountKey").orNull?.let { serviceAccountCredentials.set(file(it)) }
+    defaultToAppBundles.set(true)
+    track.set(providers.gradleProperty("playTrack").orElse("alpha"))
+    releaseStatus.set(
+        providers.gradleProperty("playReleaseStatus")
+            .map { com.github.triplet.gradle.androidpublisher.ReleaseStatus.valueOf(it.uppercase()) }
+            .orElse(com.github.triplet.gradle.androidpublisher.ReleaseStatus.COMPLETED),
+    )
+}
+
+// Listing-only publish tasks (publishReleaseListing) don't need upload-key signing.
+val signedReleaseTasks = setOf("bundleRelease", "publishReleaseBundle", "publishReleaseApk", "publishReleaseApps")
+tasks.matching { it.name in signedReleaseTasks }.configureEach {
+    val ready = releaseSigningReady
+    doFirst {
+        if (!ready) {
+            throw GradleException("Release signing requires keystore.properties with an existing upload key. See docs/play/signing.md.")
+        }
+    }
 }

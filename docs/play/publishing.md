@@ -1,18 +1,34 @@
-# Publish Slate TV on Google Play
+# Publish Slate TV on Google Play (Closed Testing & Production)
 
-## First release
+Slate TV is published as `com.stasisstate.slatetv` under the Stasis State LLC developer account with
+[Gradle Play Publisher](https://github.com/Triple-T/gradle-play-publisher) (configured in `app/build.gradle.kts` and `gradle/libs.versions.toml`).
 
-- [ ] In the Stasis State LLC Play Console account, create **Slate TV: Minimal TV Launcher** as a free app, default language English (United States). Confirm the first bundle registers `com.stasisstate.slatetv`.
-- [ ] Set the category to **Tools**, support email to `support@stasisstate.com` and website to `https://stasisstate.com`. Confirm the public privacy policy is reachable at `https://stasisstate.com/slatetv-privacy.html`.
-- [ ] Fill in the main store listing with the English text, icon, feature graphic, TV banner and TV screenshots from `app/src/main/play/`. The files follow the Gradle Play Publisher layout. The current Gradle build has no publisher plugin configured, so upload the listing and bundles in Play Console.
-- [ ] Go to **Test and release → Advanced settings → Form factors** and add Android TV. Upload TV screenshots for all listings, return to **Manage** for Android TV, select the dedicated release track and opt in for TV quality review. [Android TV release tracks](https://support.google.com/googleplay/android-developer/answer/13295490)
-- [ ] Configure the upload key using [signing.md](signing.md). Run `./gradlew :app:bundleRelease` with the Android SDK and JDK configured. Upload `app/build/outputs/bundle/release/app-release.aab` to the Android TV testing track, enroll in Play App Signing and paste the release notes from `app/src/main/play/release-notes/en-US/default.txt`. Upload the launcher bundle for this listing. The separately installed plugins have their own package IDs.
-- [ ] Add testers and share the opt-in link. Apply any testing requirements shown for the developer account. Set up license testers for billing and verify that all five tips can be purchased again after consumption and that tipping does not change feature access.
-- [ ] Complete the App content forms below, check the TV device catalog and verify D-pad navigation on a TV. Use **Publishing overview → Send for review**. After approval and testing, promote the release on the Android TV production track. Increment `versionCode` for each subsequent bundle.
+The store listing (text, icon, feature graphic, TV banner, phone & TV screenshots) and release notes live in
+`app/src/main/play/` in GPP's exact layout.
 
-## Optional Tip Jar
+## Prerequisites
 
-Set up the developer payments profile. After uploading the billing-enabled bundle, go to **Monetize with Play → Products → One-time products**. Create and activate a buy option for each ID, set prices and availability in the target countries, and configure each as a repeatable consumable purchase. The app consumes successful tips via Play Billing.
+- Upload key and `keystore.properties`: see [signing.md](signing.md) (or run `scripts/setup-upload-key.sh`).
+- `playServiceAccountKey=/absolute/path/key.json` in `~/.gradle/gradle.properties`. This is the shared Stasis State
+  service account; never commit, print, or paste the key.
+- In Play Console → **Users and permissions**, grant the service account access to the Slate TV app with:
+  *View app information*, *Release apps to testing tracks*, *Manage testing tracks and edit tester lists*, and *Manage store presence*.
+- **Privacy policy live first:** publish `slatetv-privacy.html` to `https://stasisstate.com/slatetv-privacy.html` before submitting (Google Play rejects dead URLs).
+
+## One-time Play Console setup (manual: API cannot do initial creation)
+
+1. **Create app**: Name **Slate TV: Minimal TV Launcher**, default language **English (United States)**, **App**, **Free**.
+2. **Form factors (Android TV)**: Go to **Test and release → Advanced settings → Form factors**, add **Android TV**, and opt in for TV quality review.
+3. **Store settings**: Category **Tools**, contact email `support@stasisstate.com`, website `https://stasisstate.com`.
+4. **First signed bundle by hand (`versionCode = 1`, `1.0.0-beta.1`)**:
+   - Build `app/build/outputs/bundle/release/app-release.aab` with `./gradlew :app:bundleRelease`.
+   - Go to **Test and release → Testing → Closed testing** (create track or use **Alpha** / **Android TV closed testing**), create a release, upload `app-release.aab`, enroll in **Play App Signing**, and save.
+   - Push the store listing text & graphics via API once the app exists:
+     ```sh
+     ./gradlew :app:publishReleaseListing
+     ```
+5. **Testers**: Add your Google Group or tester email list to the closed testing track and share the opt-in link. Add your test accounts under **Settings → License testing** so Tip Jar purchases can be tested without charging real money.
+6. **Optional Tip Jar products** (after the first bundle is uploaded): Go to **Monetize with Play → Products → One-time products** and create & activate all five consumable products with **exact** IDs:
 
 | Product ID | Display name | USD price |
 | --- | --- | --- |
@@ -22,20 +38,33 @@ Set up the developer payments profile. After uploading the billing-enabled bundl
 | `tip_10` | Big tip | $10.00 |
 | `tip_20` | Huge tip | $20.00 |
 
-Use “An optional tip to support Slate TV development. It does not unlock any features.” as the product description.
+Description: `"An optional tip to support Slate TV development. It does not unlock any features."`
 
-## App content
+7. **Complete App content forms** (answers below), verify D-pad navigation, and click **Publishing overview → Send for review**.
+
+## Subsequent uploads via Gradle Play Publisher
+
+Bump `versionCode` (and `versionName`, e.g., `1.0.0-beta.2`) in `app/build.gradle.kts` before every upload:
+
+```sh
+./gradlew :app:publishReleaseBundle :app:publishReleaseListing   # Closed testing ("alpha") + listing
+./gradlew :app:publishReleaseListing                             # Store text & graphics only
+./gradlew :app:publishReleaseBundle -PplayTrack=internal         # Internal testing
+./gradlew :app:publishReleaseBundle -PplayReleaseStatus=draft    # Draft upload before first review
+```
+
+## App content answers
 
 - **Privacy policy** — `https://stasisstate.com/slatetv-privacy.html`.
-- **App access** — The launcher is usable without a login. Optional companion plugins connect to user-configured servers or local media sources. Document that setup in review notes if demonstrating plugin integrations.
-- **Ads** — No. **Target audience** — 18 and over. **Government, financial, health and news app declarations** — No, where prompted.
-- **Data safety** — Declare **Financial info → Purchase history** only. Mark it collected, optional, used for app functionality and not shared. Play Billing handles tip purchases over encrypted connections. The launcher does not collect payment card details, analytics, crash reports or the installed-app inventory. Plugin credentials and server traffic belong to user-configured companion apps and are not sent to Stasis State LLC. Verify the privacy policy and actual deletion process before completing the deletion questions. [Data safety form](https://support.google.com/googleplay/android-developer/answer/10787469)
-- **IARC content rating** — Choose **Utility, Productivity, Communication, or Other**. Answer No for violence, sexual content, strong language, controlled substances, gambling, interaction between users and sharing personal information. Answer Yes for digital purchases because of the Tip Jar and No for randomized purchases. Where asked about access to online content, describe the optional plugins and user-supplied servers, including live programming that can vary. Use the rating the questionnaire assigns. [Content ratings](https://support.google.com/googleplay/android-developer/answer/9859655)
+- **App access** — All core launcher features are usable without a login or special credentials.
+- **Ads** — No.
+- **Target audience** — 18 and over (not designed for children; "Appeals to children": No).
+- **Government, financial, health, and news apps** — No.
+- **Data safety** — Declare **Financial info → Purchase history** only. Mark it **collected**, **not shared**, **optional** (only users who voluntarily tip create an order), purpose **App functionality**, **encrypted in transit** (Google Play Billing uses HTTPS). Nothing else is collected (no analytics, ads, crash SDKs, or installed-app inventory transmission). Deletion inquiries: `privacy@stasisstate.com` (order records are managed by Google Play).
+- **IARC content rating** — Choose **Utility, Productivity, Communication, or Other**. Answer **No** for violence, sexual content, strong language, controlled substances, gambling, user interaction, and sharing personal information. Answer **Yes** to digital purchases (optional Tip Jar) and **No** to randomized purchases.
 
-## Broad package visibility
+## Broad package visibility (`QUERY_ALL_PACKAGES`)
 
-Submit the `QUERY_ALL_PACKAGES` declaration if Play Console flags it for the uploaded bundle. Describe the core launcher function and show the All Apps grid, pinning, and launching apps with a TV remote.
+Submit the `QUERY_ALL_PACKAGES` declaration if Play Console prompts for it:
 
-> Slate TV replaces the Android TV home screen. Its core function is to let users find, pin and launch installed apps. The launcher lists TV apps and can include sideloaded apps with standard launcher entries. The installed apps vary by device and user, so a fixed package allowlist would exclude apps that users expect to find. Package visibility is used on-device for app discovery and launch. The app inventory is never transmitted or used for advertising or analytics.
-
-Test whether intent-scoped package visibility covers all supported app discovery flows before submitting a bundle that requests broad visibility. Google Play requires a justification for why narrower visibility fails on supported devices. [Package visibility policy](https://support.google.com/googleplay/android-developer/answer/10158779)
+> Slate TV replaces the Android TV home screen. Its core function is to let users find, pin, organize, and launch installed apps with a TV remote. The launcher lists Android TV apps and optionally includes sideloaded apps with standard launcher entries. Installed apps vary per user and device, so a fixed package allowlist cannot cover user apps. Package visibility is used exclusively on-device for app discovery, pinning, and launching; the app list is never transmitted, stored remotely, or used for ads or analytics.
