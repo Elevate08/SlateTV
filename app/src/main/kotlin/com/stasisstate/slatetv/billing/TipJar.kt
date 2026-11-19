@@ -38,7 +38,7 @@ data class TipJarState(
  * PURCHASED so users can tip again if they ever wish.
  *
  * Connects lazily when Settings is opened (never on cold HOME boot) so launcher startup stays
- * instantaneous and Play Services never impacts Shield wake-up speed.
+ * instantaneous and Play Services never impacts TV wake-up speed.
  */
 class TipJar(
     context: Context,

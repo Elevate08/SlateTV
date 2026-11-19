@@ -11,7 +11,7 @@ import java.security.MessageDigest
 /**
  * Bounded, atomic LRU disk cache for background images + metadata sidecars.
  *
- * Key NVIDIA Shield reliability guarantees:
+ * Key Android TV reliability guarantees:
  * - Writes image bytes, sidecar JSON, and per-plugin `last_shown` pointers atomically
  *   via temp file + rename so crashes/power-loss never leave partial corrupt files.
  * - Streams downloads directly to disk with an explicit byte cap (never buffers huge originals in RAM).

@@ -309,7 +309,7 @@ class ShelfHostingTest {
         assertEquals(1, flaky.calls)
         assertEquals(60_000L, manager.nextDelayMs())
 
-        // Shield wake: plugin returns null (transient). Shelf is preserved and a 4s retry is scheduled.
+        // TV wake: plugin returns null (transient). Shelf is preserved and a 4s retry is scheduled.
         flaky.returnNull = true
         manager.refresh()
         runCurrent()

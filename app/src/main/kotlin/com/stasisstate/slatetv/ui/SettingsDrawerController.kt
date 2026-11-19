@@ -203,14 +203,14 @@ internal class SettingsDrawerController(
 
         addRow(
             "Keep Screen On (Photo Frame Mode)",
-            if (settings.keepScreenOn) "On — prevents Shield sleep/screensaver" else "Off — respects Shield sleep timer",
+            if (settings.keepScreenOn) "On — prevents TV sleep and screensaver" else "Off — respects TV sleep timer",
         ) {
             val updated = preferences.update { it.copy(keepScreenOn = !it.keepScreenOn) }
             onSettingsChanged(updated, false, false)
             rebuild(lastSyncStatus)
         }
 
-        addSectionHeader("APPS & SHIELD SYSTEM")
+        addSectionHeader("APPS & SYSTEM")
 
         addRow(
             "Include Sideloaded Phone Apps",
@@ -240,7 +240,7 @@ internal class SettingsDrawerController(
 
         addRow(
             "Android TV System Settings",
-            "Open Shield Device Preferences / Default Home",
+            "Open Device Preferences and Default Home",
         ) {
             close()
             runCatching {

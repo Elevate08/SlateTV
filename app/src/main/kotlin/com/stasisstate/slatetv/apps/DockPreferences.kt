@@ -130,7 +130,6 @@ class DockPreferences(private val storage: DockStorage) {
             "com.stremio.one",
             "org.xbmc.kodi",
             "com.spotify.tv.android",
-            "com.nvidia.tegrazone3",
             "com.android.tv.settings",
         )
     }

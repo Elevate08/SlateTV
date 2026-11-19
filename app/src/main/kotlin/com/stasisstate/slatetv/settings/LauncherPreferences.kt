@@ -12,7 +12,7 @@ data class LauncherSettings(
     val showCaption: Boolean = true,
     val backdropDimPercent: Int = 18,       // 0..60% subtle dim over photos
     val smartPortraitBlur: Boolean = true,
-    val keepScreenOn: Boolean = false,      // Opt-in for dedicated digital photo frame mode (respects OLED/Shield sleep by default)
+    val keepScreenOn: Boolean = false,      // Opt-in for dedicated digital photo frame mode (respects OLED/TV sleep by default)
     val disabledShelfPluginIds: Set<String> = emptySet(),
     val showSideloadedApps: Boolean = false,
 ) {

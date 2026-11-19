@@ -12,10 +12,10 @@ internal data class HomeShelf(val plugin: ShelfPluginMetadata, val data: ShelfDa
 /**
  * Coordinates foreground Home Shelf refreshes off the main thread.
  *
- * Shield wake resilience:
+ * TV wake resilience:
  * - Runs PackageManager discovery on [Dispatchers.IO] (never blocks UI thread).
  * - Preserves the last good shelf across up to [MAX_TRANSIENT_FAILURES] consecutive null/timeout
- *   fetches so a brief DHCP hiccup after Shield wake doesn't make the Live TV shelf vanish.
+ *   fetches so a brief DHCP hiccup after TV wake doesn't make the Live TV shelf vanish.
  * - After a transient (null) fetch, schedules a short retry ([TRANSIENT_RETRY_DELAYS_MS]) instead of
  *   waiting the full [POLL_INTERVAL_MS] so the shelf recovers quickly once the network is back.
  * - Immediately hides a shelf if the plugin explicitly reports `available == false` or is disabled.

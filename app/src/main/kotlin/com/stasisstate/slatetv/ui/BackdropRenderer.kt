@@ -8,7 +8,7 @@ import com.stasisstate.slatetv.wallpaper.LoadedBackdrop
  * Double-buffered GPU crossfade backdrop renderer with Smart Portrait Blur Pillarbox.
  *
  * Uses standard ImageViews inside an isolated container (never SurfaceView/TextureView)
- * so HDMI-CEC wakes on NVIDIA Shield never lose the surface or flash black.
+ * so HDMI-CEC wakes on Android TV never lose the surface or flash black.
  *
  * Hardening:
  * - Releases outgoing drawables immediately after fade completion (keeps peak RAM minimal).

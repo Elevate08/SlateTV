@@ -48,7 +48,7 @@ import kotlinx.coroutines.withContext
 /**
  * Slate TV Home Activity.
  *
- * Engineered specifically to eliminate black screens and wake-up lag on Nvidia Shield TV:
+ * Engineered specifically to eliminate black screens and wake-up lag on Android TV:
  * - Zero Accessibility Service required.
  * - Handles HDMI-CEC display configuration changes in-place without Activity recreation.
  * - Hydrates cached backdrop immediately (< 20ms) with guaranteed non-black gradient underneath.
@@ -128,7 +128,7 @@ class HomeActivity : AppCompatActivity() {
         }
 
         override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
-            // Fires once DHCP/LAN routing finishes after Shield wake-up
+            // Fires once DHCP/LAN routing finishes after TV wake-up
             runOnUiThread {
                 offlineBadge.visibility = View.GONE
                 app.wallpaperManager.onNetworkRestored()

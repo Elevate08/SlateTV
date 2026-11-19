@@ -49,7 +49,7 @@ class LocalFolderPlugin(private val context: Context) : BackgroundPlugin {
 
             BackgroundMedia(
                 id = "local:${file.name}:${file.lastModified()}",
-                imageUri = file.toURI().toString(),
+                imageUri = "file://${file.toURI().rawPath}",
                 subtitle = file.nameWithoutExtension,
             )
         }

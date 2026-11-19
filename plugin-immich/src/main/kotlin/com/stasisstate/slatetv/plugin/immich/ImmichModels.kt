@@ -8,7 +8,7 @@ enum class ImmichSourceMode(val displayName: String, val description: String) {
 }
 
 enum class ImmichImageQuality(val apiSize: String, val displayName: String) {
-    PREVIEW("preview", "Preview (Fast, 1440p — recommended for Shield)"),
+    PREVIEW("preview", "Preview (Fast, 1440p — recommended for TV)"),
     FULLSIZE("fullsize", "Full Size (Original resolution, higher RAM)"),
 }
 

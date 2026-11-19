@@ -36,7 +36,7 @@ data class LoadedBackdrop(
 /**
  * Memory-safe, streaming, EXIF-aware bitmap loader + fast portrait backdrop blurrer.
  *
- * Designed specifically for 3 GB NVIDIA Shield TV hardware:
+ * Designed specifically for low-RAM Android TV hardware:
  * - Streams HTTP/content inputs directly to disk with a strict 16 MB cap (never buffers raw bytes in RAM).
  * - Decodes ARGB_8888 (smooth 24-bit color with zero sky banding) bounded by BOTH display
  *   dimensions AND a 4.5M pixel ceiling so wide panoramas cannot cause OOM.
@@ -87,8 +87,8 @@ class BitmapLoader(
                     decoded
                 }
 
-                uri.startsWith("file://") -> {
-                    val file = runCatching { File(java.net.URI(uri)) }.getOrNull() ?: return@withContext null
+                uri.startsWith("file:") -> {
+                    val file = parseLocalFileUri(uri) ?: return@withContext null
                     if (!file.exists()) return@withContext null
                     val entry = WallpaperDiskCache.CachedEntry(
                         mediaId = media.id,
@@ -287,6 +287,11 @@ class BitmapLoader(
         const val MAX_DOWNLOAD_BYTES = 16L * 1024L * 1024L
         private const val CONTENT_URI_TIMEOUT_MS = 10_000L
         private const val MAX_DECODED_PIXELS = 4_500_000L // ~18 MB ARGB_8888 ceiling even for panoramas
+
+        internal fun parseLocalFileUri(uri: String): File? {
+            if (!uri.startsWith("file:", ignoreCase = true)) return null
+            return runCatching { File(java.net.URI(uri)) }.getOrNull()
+        }
 
         // Bounded, cancellation-aware, per-authority-capped reader so a stalled plugin provider cannot
         // wedge Dispatchers.IO or starve other providers' content:// reads.

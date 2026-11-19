@@ -257,6 +257,14 @@ class LauncherCoreUnitTest {
     }
 
     @Test
+    fun `BitmapLoader parseLocalFileUri accepts both single-slash and triple-slash file URIs`() {
+        val sample = tempFolder.newFile("banff lake.jpg")
+        assertEquals(sample.canonicalPath, BitmapLoader.parseLocalFileUri(sample.toURI().toString())?.canonicalPath)
+        assertEquals(sample.canonicalPath, BitmapLoader.parseLocalFileUri("file://${sample.toURI().rawPath}")?.canonicalPath)
+        assertNull(BitmapLoader.parseLocalFileUri("https://example.com/photo.jpg"))
+    }
+
+    @Test
     fun `TipJar exposes unrestricted optional tip tiers 1 3 5 10 and 20`() {
         assertEquals(
             listOf("tip_1", "tip_3", "tip_5", "tip_10", "tip_20"),

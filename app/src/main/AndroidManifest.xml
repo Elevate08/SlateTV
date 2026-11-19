@@ -42,7 +42,7 @@
         android:theme="@style/Theme.SlateTV">
 
         <!--
-            Shield / HDMI-CEC Hardening:
+            Android TV / HDMI-CEC Hardening:
             - configChanges (including colorMode for HDR/Dolby Vision handshakes) prevents
               Activity teardown when TV wakes over HDMI-CEC and renegotiates display mode.
             - singleTask + clearTaskOnLaunch + stateNotNeeded matches AOSP launcher semantics.

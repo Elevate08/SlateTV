@@ -33,7 +33,7 @@ data class WallpaperUiState(
  * 1. Startup hydrates immediately from per-plugin disk cache or ambient slate (zero network block).
  * 2. Network failures keep the current visible image intact (never clears to black).
  * 3. Generation counter prevents stale hydrations/fetches from overwriting newer plugin switches.
- * 4. Bounded backoff retry (3s -> 8s -> 20s -> 60s) recovers automatically when Shield DHCP/LAN
+ * 4. Bounded backoff retry (3s -> 8s -> 20s -> 60s) recovers automatically when TV DHCP/LAN
  *    or a plugin server comes back up, even when periodic rotation is set to Manual.
  */
 class WallpaperManager(
