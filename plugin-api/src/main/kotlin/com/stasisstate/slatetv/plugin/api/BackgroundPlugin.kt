@@ -1,8 +1,8 @@
 package com.stasisstate.slatetv.plugin.api
 
 /**
- * Clean, platform-independent metadata describing a background plugin
- * (either built-in or discovered externally via AIDL).
+ * Clean, platform-independent metadata describing a background photo provider
+ * (built-in connector or zero-code HTTP/JSON extension).
  */
 data class PluginMetadata(
     val id: String,
@@ -29,8 +29,8 @@ data class PluginRequestContext(
  * A single background image/artwork item supplied by a [BackgroundPlugin].
  *
  * [imageUri] may be:
- * - an `http://` or `https://` URL (fetched with [headers])
- * - a `file://` or `content://` URI
+ * - an `http://` or `https://` URL (fetched with origin-bound [headers])
+ * - a `file://` URI inside the launcher's storage/cache
  * - an `ambient://` URI for zero-network procedural gradients
  */
 data class BackgroundMedia(
@@ -48,13 +48,13 @@ data class BackgroundMedia(
 }
 
 /**
- * Unified interface implemented by both built-in plugins (Immich, Ambient Slate,
- * Local Photos) and the external AIDL plugin adapter.
+ * Unified interface implemented by built-in background providers (Ambient Slate, Local Photos,
+ * Immich) and zero-code JSON background extensions.
  */
 interface BackgroundPlugin {
     val metadata: PluginMetadata
 
-    /** Whether the plugin currently has valid configuration to supply media. */
+    /** Whether the provider currently has valid configuration to supply media. */
     suspend fun isConfigured(): Boolean = true
 
     /** Fetch a single next background item, or null if temporarily unavailable. */

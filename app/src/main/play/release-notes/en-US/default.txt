@@ -1,1 +1,1 @@
-Meet Slate TV, a gallery-first Android TV launcher with rotating photo backgrounds, a pinned app dock, and an All Apps grid. Install optional companion plugins to add custom photo sources or live TV shelves to your home screen.
+Meet Slate TV, a gallery-first Android TV launcher with rotating photo backdrops, a reorderable pinned app dock, built-in photo library and live TV guide connectors, and zero-code JSON extensions via QR or URL.

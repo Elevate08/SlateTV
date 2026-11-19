@@ -15,6 +15,21 @@ object NetworkClientFactory {
     private val BODY_REPRESENTATION_HEADERS =
         listOf("Content-Type", "Content-Length", "Content-Encoding", "Content-Language", "Transfer-Encoding")
 
+    private val HEADER_NAME_PATTERN = Regex("^[A-Za-z0-9!#$%&'*+\\-.^_`|~]{1,64}$")
+    private val BLOCKED_HEADERS = setOf("host", "connection", "content-length", "transfer-encoding")
+
+    /** Filters extension-supplied HTTP headers to valid RFC 9110 tokens and non-hop-by-hop names. */
+    internal fun sanitizeHeaders(entries: Sequence<Pair<String, String>>): Map<String, String> =
+        entries
+            .filter { (name, value) ->
+                HEADER_NAME_PATTERN.matches(name) &&
+                    name.lowercase() !in BLOCKED_HEADERS &&
+                    value.length <= 2048 &&
+                    value.none { it == '\r' || it == '\n' || it.code < 0x20 || it.code == 0x7f }
+            }
+            .take(16)
+            .toMap()
+
     suspend fun OkHttpClient.executeCancellable(request: Request): Response {
         val call = newCall(request)
         return suspendCancellableCoroutine { cont ->

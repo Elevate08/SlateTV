@@ -2,6 +2,6 @@ Slate TV is a minimal, gallery-first launcher for Android TV. A full-screen phot
 
 Slate TV is engineered for fast, reliable wake recovery on Android TV, handling HDMI-CEC display and HDR mode switches cleanly without blank screens. No Accessibility Service is required.
 
-Open AIDL interfaces let independently installable companion plugins add custom background photo sources and optional home shelves such as live TV and program guides. Companion plugins run in separate apps and stay hidden whenever unconfigured or unavailable, keeping your home screen uncluttered.
+Built-in connectors bring local photo folders, self-hosted photo libraries, and live TV program guides directly into one lightweight launcher—no extra companion apps required. An open, zero-code JSON extension protocol also lets you add custom photo feeds or home shelves via QR code or URL, staying hidden whenever unconfigured or unavailable to keep your home screen uncluttered.
 
 Slate TV is free, with zero ads and zero paywalls. The optional Tip Jar supports development. A tip unlocks nothing, and every launcher feature is available without a purchase.

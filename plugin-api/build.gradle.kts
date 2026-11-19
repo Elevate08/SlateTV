@@ -1,6 +1,5 @@
 plugins {
     alias(libs.plugins.android.library)
-    alias(libs.plugins.kotlin.parcelize)
 }
 
 android {
@@ -10,10 +9,6 @@ android {
     defaultConfig {
         minSdk = 26
         consumerProguardFiles("consumer-rules.pro")
-    }
-
-    buildFeatures {
-        aidl = true
     }
 
     compileOptions {

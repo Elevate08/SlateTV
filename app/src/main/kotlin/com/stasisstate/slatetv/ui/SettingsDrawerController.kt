@@ -13,6 +13,8 @@ import androidx.core.content.ContextCompat
 import com.stasisstate.slatetv.R
 import com.stasisstate.slatetv.apps.AppRepository
 import com.stasisstate.slatetv.billing.TipJarState
+import com.stasisstate.slatetv.connector.extensions.ExtensionRegistry
+import com.stasisstate.slatetv.connector.extensions.ExtensionsManagerActivity
 import com.stasisstate.slatetv.settings.DefaultLauncherHelper
 import com.stasisstate.slatetv.settings.LauncherPreferences
 import com.stasisstate.slatetv.settings.LauncherSettings
@@ -39,6 +41,7 @@ internal class SettingsDrawerController(
     private val diskCache: WallpaperDiskCache,
     private val onSettingsChanged: (newSettings: LauncherSettings, pluginChanged: Boolean, appsChanged: Boolean) -> Unit,
     private val shelfRegistry: ShelfPluginRegistry,
+    private val extensionRegistry: ExtensionRegistry,
     private val onClearCache: () -> Unit,
     private val onTipSelected: (productId: String) -> Unit,
     private val onSetDefaultHome: () -> Unit,
@@ -71,7 +74,7 @@ internal class SettingsDrawerController(
         refreshJob?.cancel()
         refreshJob = scope.launch {
             withContext(Dispatchers.IO) {
-                pluginRegistry.refreshExternalPlugins()
+                pluginRegistry.refreshExtensions()
                 shelfRegistry.refresh()
             }
             if (isVisible) {
@@ -104,15 +107,10 @@ internal class SettingsDrawerController(
 
         itemsContainer.removeAllViews()
 
-        addSectionHeader("BACKGROUND PLUGIN")
+        addSectionHeader("BACKGROUND SOURCE")
         for (plugin in plugins) {
             val isSelected = plugin.metadata.id == activePlugin.metadata.id
-            val badge = when {
-                isSelected && plugin.metadata.isExternal -> "Active · External APK"
-                isSelected -> "Active"
-                plugin.metadata.isExternal -> "External APK plugin"
-                else -> plugin.metadata.description
-            }
+            val badge = if (isSelected) "Active" else plugin.metadata.description
             addRow(
                 title = (if (isSelected) "●  " else "○  ") + plugin.metadata.name,
                 subtitle = badge,
@@ -125,19 +123,17 @@ internal class SettingsDrawerController(
             }
         }
 
-        val external = plugins.filter { it.metadata.isExternal }
-        if (external.isEmpty()) addSectionHeader("Install a Slate TV background plugin APK to add more providers.")
-        for (plugin in external) {
+        val configurableBackgrounds = plugins.filter { it.metadata.settingsActivityClassName != null }
+        for (plugin in configurableBackgrounds) {
             val metadata = plugin.metadata
             val activity = metadata.settingsActivityClassName ?: continue
-            val packageName = metadata.packageName ?: continue
-            addRow("Configure ${metadata.name}", "Open plugin settings", "background-config:${metadata.id}") {
+            val packageName = metadata.packageName ?: context.packageName
+            addRow("Configure ${metadata.name}", "Open provider settings", "background-config:${metadata.id}") {
                 launchPluginActivity(context, packageName, activity)
             }
         }
 
         addSectionHeader("HOME SHELVES (LIVE TV / GUIDES)")
-        if (shelfRegistry.plugins.isEmpty()) addSectionHeader("Install a Slate TV shelf plugin APK to add a home shelf.")
         for (plugin in shelfRegistry.plugins) {
             val metadata = plugin.metadata
             val enabled = !shelfRegistry.isDisabled(metadata.id, settings.disabledShelfPluginIds)
@@ -150,7 +146,7 @@ internal class SettingsDrawerController(
                 rebuild(lastSyncStatus)
             }
             metadata.settingsActivityClassName?.let { activity ->
-                addRow("Configure ${metadata.name}", "Open plugin settings", "shelf-config:${metadata.id}") {
+                addRow("Configure ${metadata.name}", "Open provider settings", "shelf-config:${metadata.id}") {
                     launchPluginActivity(context, metadata.packageName, activity)
                 }
             }
@@ -159,6 +155,20 @@ internal class SettingsDrawerController(
                     launchPluginActivity(context, metadata.packageName, activity)
                 }
             }
+        }
+
+        addSectionHeader("EXTENSIONS")
+        val extensionCount = runCatching { extensionRegistry.installedExtensions().size }.getOrDefault(0)
+        addRow(
+            "Manage JSON Extensions",
+            if (extensionCount > 0) {
+                "$extensionCount installed — add photo feeds or shelves via QR / URL"
+            } else {
+                "Add photo feeds or home shelves via QR code or URL (no APKs)"
+            },
+            "manage-json-extensions",
+        ) {
+            launchPluginActivity(context, context.packageName, ExtensionsManagerActivity::class.java.name)
         }
 
         addSectionHeader("DISPLAY & GALLERY")

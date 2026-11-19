@@ -1,4 +1,0 @@
--keep class com.stasisstate.slatetv.plugin.api.** { *; }
--keep class com.stasisstate.slatetv.plugin.immich.ImmichBackgroundPluginService { *; }
--keep class com.stasisstate.slatetv.plugin.immich.ImmichMediaProvider { *; }
--keep class com.stasisstate.slatetv.plugin.immich.ImmichSettingsActivity { *; }

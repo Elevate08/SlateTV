@@ -4,6 +4,8 @@ import android.app.Application
 import android.util.Log
 import com.stasisstate.slatetv.apps.AppRepository
 import com.stasisstate.slatetv.apps.DockPreferences
+import com.stasisstate.slatetv.connector.extensions.ExtensionRegistry
+import com.stasisstate.slatetv.connector.immich.BuiltInImmichPlugin
 import com.stasisstate.slatetv.settings.LauncherPreferences
 import com.stasisstate.slatetv.wallpaper.BitmapLoader
 import com.stasisstate.slatetv.wallpaper.WallpaperDiskCache
@@ -34,6 +36,8 @@ class SlateApplication : Application() {
         private set
     lateinit var appRepository: AppRepository
         private set
+    lateinit var extensionRegistry: ExtensionRegistry
+        private set
     lateinit var pluginRegistry: PluginRegistry
         private set
     lateinit var diskCache: WallpaperDiskCache
@@ -50,13 +54,19 @@ class SlateApplication : Application() {
         launcherPreferences = LauncherPreferences(this)
         dockPreferences = DockPreferences(this)
         appRepository = AppRepository(this)
+        extensionRegistry = ExtensionRegistry(this)
 
         pluginRegistry = PluginRegistry(
             context = this,
             ambientPlugin = AmbientSlatePlugin(),
             localPlugin = LocalFolderPlugin(this),
+            extraBuiltInPlugins = listOf(BuiltInImmichPlugin(this)),
+            jsonExtensionProvider = { extensionRegistry.backgroundPlugins() },
+            legacyBuiltInAliases = mapOf(
+                BuiltInImmichPlugin.LEGACY_EXTERNAL_ID to BuiltInImmichPlugin.PLUGIN_ID,
+            ),
         ).apply {
-            refreshExternalPlugins()
+            refreshExtensions()
         }
 
         diskCache = WallpaperDiskCache(File(cacheDir, "wallpapers"))

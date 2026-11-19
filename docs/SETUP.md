@@ -4,32 +4,32 @@ This guide walks through installing **Slate TV** (`com.stasisstate.slatetv`) and
 
 ---
 
-## 1. Install Slate TV and Optional Plugins via ADB
+## 1. Install Slate TV via Google Play or ADB
 
-Enable **Network Debugging** on your Android TV (`Settings > Device Preferences > About > Build` x7 to unlock Developer Options, then `Developer Options > Network Debugging`).
+Slate TV ships as a **single self-contained APK / App Bundle**—no companion plugin APKs or sideloading are required. Built-in photo server support, System Live Channels / EPG Guide, and zero-code HTTP/JSON extensions all live inside Slate TV.
+
+For local testing over ADB, enable **Network Debugging** on your Android TV (`Settings > Device Preferences > About > Build` x7 to unlock Developer Options, then `Developer Options > Network Debugging`):
 
 ```bash
 # Connect to your Android TV's local IP
 adb connect <TV_IP>:5555
 
-# 1. Install Slate TV Launcher
+# Install Slate TV (single APK includes built-in connectors + JSON extension manager)
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 
-# 2. (Optional) Install companion background or home-shelf plugin APKs
-adb install -r plugin-immich/build/outputs/apk/debug/plugin-immich-debug.apk
-adb install -r plugin-jellyfin/build/outputs/apk/debug/plugin-jellyfin-debug.apk
+# (Optional) Grant System Live Channels EPG access if your Android TV build suppresses the runtime prompt
+adb shell pm grant com.stasisstate.slatetv android.permission.READ_TV_LISTINGS
 ```
-
-> **Signing note:** Companion plugins verify Slate TV's signing certificate before sharing credentials or private media. When installing local builds, build both `:app` and plugin APKs with the same keystore (for example, all debug builds or all signed with the same upload key), or pass `-PtrustedSlateCertSha256=<64-hex-sha256>` when building a plugin for a differently signed host.
 
 ---
 
-## 2. Configure Optional Companion Plugins
+## 2. Configure Built-In Connectors & Zero-Code JSON Extensions
 
-Companion plugins run as background/shelf extensions and stay hidden from your Android TV app drawer so your launcher stays uncluttered. Configure them directly from inside Slate TV:
+Configure everything directly inside **Slate TV Settings** (zero extra app icons cluttering your launcher):
 
-- **Background plugins:** Open **Slate TV Settings → Background Plugin**, select an installed plugin, then choose **Configure…** (supports LAN auto-discovery, direct sign-in, or on-demand LAN QR code pairing).
-- **Home shelf plugins:** Open **Slate TV Settings → Home Shelves**, toggle the shelf on/off, or choose **Configure…**. Live TV channels can be read directly from Android TV's system Live Channels EPG (no login required, after granting `READ_TV_LISTINGS`), or optionally paired with a media server via LAN discovery and Quick Connect. If a shelf source is unconfigured or unavailable, Slate TV automatically keeps the shelf hidden.
+- **Background Sources:** Open **Slate TV Settings → BACKGROUND PLUGIN** to choose **Ambient Slate**, **Local Photos**, **Immich Photos** (tap **Configure Immich Photos** for LAN auto-discovery, direct sign-in, or QR phone pairing with TOFU TLS certificate pinning), or any installed JSON photo feed extension.
+- **Live TV & Guide Shelf:** Open **Slate TV Settings → HOME SHELVES** and tap **Configure Live TV & Guide**. Uses Android TV's built-in **System Live Channels** EPG by default (no login required after granting `READ_TV_LISTINGS`), or optionally pairs with a media server via LAN discovery and Quick Connect. Auto-hides whenever unconfigured or unavailable.
+- **Zero-Code JSON Extensions:** Open **Slate TV Settings → EXTENSIONS → Manage JSON Extensions** to add any HTTP/JSON photo feed or home shelf manifest via **Phone QR Code** or direct URL (with explicit on-TV confirmation).
 
 ---
 

@@ -1,66 +1,99 @@
-# Building External Plugins for Slate TV
+# Developing Zero-Code JSON Extensions for Slate TV
 
-Slate TV discovers external plugin APKs automatically via Android's `PackageManager` and communicates over two versioned AIDL contracts in `:plugin-api` (`API_VERSION = 1`):
-
-1. **Background Provider (`com.stasisstate.slatetv.plugin.BACKGROUND_PROVIDER`)** — Supplies full-bleed photos/art via `ISlateBackgroundPlugin` (reference implementations: `:plugin-immich` and `:plugin-sample-external`).
-2. **Home Shelf Provider (`com.stasisstate.slatetv.plugin.SHELF_PROVIDER`)** — Supplies optional, minimal home-screen shelves such as Live TV & Guides via `ISlateShelfPlugin` (reference implementation: `:plugin-jellyfin`).
-
-Both contracts support **arbitrary HTTP request headers** (`Bundle`), so self-hosted services never need to leak tokens in URL query parameters.
+Slate TV supports community **photo feeds** and **home shelves** through a zero-code **Open HTTP/JSON Extension Protocol (v1)**. Extensions require **no Android APK, no sideloading, no Play Store account, and no code running on the TV**—just host a `manifest.json` file (static GitHub Pages, Cloudflare Worker, or a local LAN server) and add its URL from **Slate TV Settings → Extensions → Manage JSON Extensions** via Phone QR Code or direct URL.
 
 ---
 
-## 1. Background Provider (`ISlateBackgroundPlugin`)
+## 1. Extension Manifest (`manifest.json`)
 
-Declare an exported `Service` with intent filter `com.stasisstate.slatetv.plugin.BACKGROUND_PROVIDER`:
+Serve a JSON document over **HTTPS** (or **HTTP** on a private RFC 1918 / `.local` LAN host):
 
-```xml
-<service
-    android:name=".MyBackgroundPluginService"
-    android:exported="true">
-    <intent-filter>
-        <action android:name="com.stasisstate.slatetv.plugin.BACKGROUND_PROVIDER" />
-    </intent-filter>
-    <meta-data android:name="com.stasisstate.slatetv.plugin.ID" android:value="com.example.myplugin" />
-    <meta-data android:name="com.stasisstate.slatetv.plugin.NAME" android:value="My Photo Feed" />
-    <meta-data android:name="com.stasisstate.slatetv.plugin.DESCRIPTION" android:value="Custom photo backdrops" />
-    <meta-data android:name="com.stasisstate.slatetv.plugin.SETTINGS_ACTIVITY" android:value="com.example.myplugin.SettingsActivity" />
-    <meta-data android:name="com.stasisstate.slatetv.plugin.API_VERSION" android:value="1" />
-</service>
+```json
+{
+  "schemaVersion": 1,
+  "id": "com.example.alpine-gallery",
+  "name": "Alpine Gallery",
+  "description": "Curated daily mountain photography",
+  "version": "1.0.0",
+  "author": "Your Name",
+  "type": "background",
+  "backgroundEndpoint": "/backgrounds.json",
+  "refreshIntervalSeconds": 900
+}
 ```
 
-Supported `PluginMediaItem.imageUri` schemes:
-- `https://` or `http://` (fetched with `headers`, origin-bound redirects)
-- `content://` (read via `ContentResolver` with `FLAG_GRANT_READ_URI_PERMISSION`, ideal for proxying self-signed LAN HTTPS servers as `:plugin-immich` does)
-- `ambient://#hex1,#hex2,#hex3` (zero-network procedural gradient)
+| Field | Required | Notes |
+| :--- | :---: | :--- |
+| `schemaVersion` | Yes | Must be `1` |
+| `id` | Yes | Stable reverse-DNS identifier (e.g., `com.example.feed`) |
+| `name` | Yes | Display name shown in Slate TV (≤ 120 chars) |
+| `description` | No | Short subtitle (≤ 160 chars) |
+| `version` | No | Version string (e.g., `1.0.0`) |
+| `author` | No | Publisher name displayed on the TV install confirmation screen |
+| `type` | Yes | `"background"`, `"shelf"`, or `"both"` |
+| `backgroundEndpoint` | When `background`/`both` | Relative path or same-origin URL returning a background feed |
+| `shelfEndpoint` | When `shelf`/`both` | Relative path or same-origin URL returning a home shelf |
+| `refreshIntervalSeconds` | No | Minimum cache interval for background feed refreshes (default `900`) |
+| `authHeaderName` | No | Optional HTTP header name for user-supplied API key (e.g., `X-API-Key` or `Authorization`) |
+
+> **Simple Photo Lists:** You can also point Slate TV directly at a plain JSON photo array (`[{"imageUrl": "https://...", "title": "...", "subtitle": "..."}]`) or `{"items": [...]}` without a separate manifest—Slate TV automatically wraps it as a background feed extension.
 
 ---
 
-## 2. Home Shelf / Live TV Provider (`ISlateShelfPlugin`)
+## 2. Background Feed Endpoint (`backgrounds.json`)
 
-Declare an exported `Service` with intent filter `com.stasisstate.slatetv.plugin.SHELF_PROVIDER`:
-
-```xml
-<service
-    android:name=".MyShelfPluginService"
-    android:exported="true">
-    <intent-filter>
-        <action android:name="com.stasisstate.slatetv.plugin.SHELF_PROVIDER" />
-    </intent-filter>
-    <meta-data android:name="com.stasisstate.slatetv.plugin.ID" android:value="com.example.myshelf" />
-    <meta-data android:name="com.stasisstate.slatetv.plugin.NAME" android:value="My Live TV" />
-    <meta-data android:name="com.stasisstate.slatetv.plugin.DESCRIPTION" android:value="Live TV channels on the home screen" />
-    <meta-data android:name="com.stasisstate.slatetv.plugin.SETTINGS_ACTIVITY" android:value="com.example.myshelf.SettingsActivity" />
-    <meta-data android:name="com.stasisstate.slatetv.plugin.GUIDE_ACTIVITY" android:value="com.example.myshelf.GuideActivity" />
-    <meta-data android:name="com.stasisstate.slatetv.plugin.API_VERSION" android:value="1" />
-</service>
+```json
+{
+  "items": [
+    {
+      "id": "dolomites-01",
+      "imageUrl": "https://example.com/photos/dolomites.jpg",
+      "title": "Evening Light",
+      "subtitle": "Dolomites · October 12",
+      "width": 3840,
+      "height": 2160
+    }
+  ]
+}
 ```
 
-Return `ShelfPayload(available = false, ...)` whenever your service is unconfigured or the feature (e.g. Live TV tuner) is unavailable—Slate TV automatically hides the shelf so the home screen remains minimal.
+- `"url"` is also accepted as an alias for `"imageUrl"`.
+- Only `https://` and `http://` image URLs are accepted; responses are capped at **1 MiB** and **200 items**.
+- When an API key is configured, it is encrypted on-device with Android Keystore and sent **only** to the manifest's exact origin (stripped automatically on cross-origin redirects).
 
 ---
 
-## 3. Security & Lifecycle Rules
+## 3. Home Shelf Endpoint (`shelf.json`)
 
-- Verify `Binder.getCallingUid()` belongs to `com.stasisstate.slatetv` before returning auth headers or private media (as implemented in `:plugin-immich` and `:plugin-jellyfin`).
-- Slate TV binds on-demand, enforces strict **4-second** bind + RPC timeouts on bounded daemon threads, unbinds immediately afterward, and applies a 30-second cooldown after consecutive timeouts.
-- Slate TV strictly ignores `file://` image URIs and untrusted TLS overrides from external plugins, strips auth headers on cross-origin HTTP redirects, and blocks any launch intent targeting Slate TV's own package.
+```json
+{
+  "available": true,
+  "shelfTitle": "Featured Streams",
+  "items": [
+    {
+      "id": "item-1",
+      "title": "Alpine Trails",
+      "subtitle": "Live Nature Documentary",
+      "channelNumber": "CH 12",
+      "badge": "LIVE",
+      "imageUrl": "https://example.com/logos/nature.png",
+      "progressPercent": 46,
+      "launchUri": "https://example.com/watch/alpine"
+    }
+  ]
+}
+```
+
+- Set `"available": false` (or return an empty `items` array) to keep the shelf cleanly hidden on the home screen.
+- Responses are capped at **1 MiB** and **24 cards**.
+- Allowed card actions:
+  - `launchPackageName`: launches an installed Android TV app by package name (never Slate TV itself).
+  - `launchUri`: strictly restricted to `https://`, `http://`, and `market://` schemes.
+
+---
+
+## 4. Installing on Android TV
+
+1. Open **Slate TV Settings → Extensions → Manage JSON Extensions**.
+2. Choose **Add Extension via Phone QR Code** (recommended—paste the manifest URL and optional API key on your phone browser using a one-time PIN) or **Add Extension by URL**.
+3. Review the on-TV confirmation screen showing extension name, author, origin host, and type, then select **Install**.

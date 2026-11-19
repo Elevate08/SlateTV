@@ -64,7 +64,7 @@ internal class HomeShelfController(
     private var selected: HomeShelf? = null
     private var pendingCardFocus = false
     private val adapter = HomeShelfAdapter(context, scope, client) { card ->
-        selected?.takeIf { card in it.data.items }?.let { launchShelfCard(context, it.plugin.packageName, card) }
+        selected?.takeIf { card in it.data.items }?.let { launchShelfCard(context, card) }
     }
 
     init {

@@ -77,6 +77,9 @@ android {
 
 dependencies {
     implementation(project(":plugin-api"))
+    implementation(project(":connector-immich"))
+    implementation(project(":connector-livetv"))
+    implementation(project(":connector-extensions"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)

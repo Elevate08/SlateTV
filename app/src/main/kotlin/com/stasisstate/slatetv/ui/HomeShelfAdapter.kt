@@ -16,7 +16,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.stasisstate.slatetv.NetworkClientFactory.executeCancellable
 import com.stasisstate.slatetv.R
 import com.stasisstate.slatetv.plugin.api.ShelfCard
-import com.stasisstate.slatetv.wallpaper.ContentUriOpener
+import com.stasisstate.slatetv.wallpaper.BitmapLoader
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,7 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.io.ByteArrayOutputStream
+import java.io.File
 
 internal class HomeShelfAdapter(
     private val context: Context,
@@ -79,19 +79,21 @@ internal class HomeShelfAdapter(
 
     private suspend fun loadImage(key: ImageKey): Bitmap? = withContext(Dispatchers.IO) {
         try {
-            val bytes = if (key.uri.startsWith("content://")) {
-                readContentBytes(key.uri)
-            } else {
-                val request = Request.Builder().url(key.uri).apply {
-                    key.headers.forEach { (name, value) -> header(name, value) }
-                }.build()
-                client.executeCancellable(request).use { response ->
-                    val body = response.body ?: return@use null
-                    if (!response.isSuccessful || body.contentLength() > MAX_IMAGE_BYTES) return@use null
-                    val source = body.source()
-                    if (source.request(MAX_IMAGE_BYTES + 1)) return@use null
-                    source.readByteArray()
+            val bytes = when {
+                key.uri.startsWith("file:") -> readCachedFileBytes(key.uri)
+                key.uri.startsWith("http://") || key.uri.startsWith("https://") -> {
+                    val request = Request.Builder().url(key.uri).apply {
+                        key.headers.forEach { (name, value) -> header(name, value) }
+                    }.build()
+                    client.executeCancellable(request).use { response ->
+                        val body = response.body ?: return@use null
+                        if (!response.isSuccessful || body.contentLength() > MAX_IMAGE_BYTES) return@use null
+                        val source = body.source()
+                        if (source.request(MAX_IMAGE_BYTES + 1)) return@use null
+                        source.readByteArray()
+                    }
                 }
+                else -> null
             } ?: return@withContext null
             decodeDownsampled(bytes)
         } catch (cancelled: CancellationException) {
@@ -101,23 +103,14 @@ internal class HomeShelfAdapter(
         }
     }
 
-    private suspend fun readContentBytes(uri: String): ByteArray? = contentOpener.read(
-        context = context,
-        uri = uri,
-        timeoutMs = CONTENT_URI_TIMEOUT_MS,
-        maxBytes = MAX_IMAGE_BYTES,
-    ) { stream ->
-        val buffer = ByteArray(8192)
-        val bytes = ByteArrayOutputStream()
-        var total = 0L
-        while (true) {
-            val read = stream.read(buffer)
-            if (read == -1) break
-            total += read
-            if (total > MAX_IMAGE_BYTES) return@read null
-            bytes.write(buffer, 0, read)
-        }
-        bytes.toByteArray()
+    /** Reads local logo files strictly confined inside Slate TV's own cache directory. */
+    private fun readCachedFileBytes(uri: String): ByteArray? {
+        val file = BitmapLoader.parseLocalFileUri(uri) ?: return null
+        val cacheRoot = context.cacheDir.canonicalPath + File.separator
+        val canonical = runCatching { file.canonicalPath }.getOrNull() ?: return null
+        if (!canonical.startsWith(cacheRoot)) return null
+        if (!file.isFile || file.length() !in 1L..MAX_IMAGE_BYTES) return null
+        return runCatching { file.readBytes() }.getOrNull()
     }
 
     private fun decodeDownsampled(bytes: ByteArray): Bitmap? {
@@ -143,8 +136,5 @@ internal class HomeShelfAdapter(
 
     private companion object {
         const val MAX_IMAGE_BYTES = 2L * 1024 * 1024
-        const val CONTENT_URI_TIMEOUT_MS = 4_000L
-
-        val contentOpener = ContentUriOpener("slate-shelf-content")
     }
 }

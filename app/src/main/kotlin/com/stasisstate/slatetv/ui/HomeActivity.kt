@@ -73,7 +73,7 @@ class HomeActivity : AppCompatActivity() {
     private lateinit var btnNextPhoto: ImageButton
     private lateinit var btnSettings: ImageButton
 
-    private val shelfRegistry by lazy { ShelfPluginRegistry(this) }
+    private val shelfRegistry by lazy { ShelfPluginRegistry(this, app.extensionRegistry) }
     private val shelfManager by lazy {
         ShelfManager(lifecycleScope, shelfRegistry) { migratedDisabledShelfIds() }
     }
@@ -119,10 +119,6 @@ class HomeActivity : AppCompatActivity() {
     private val packageChangeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             lifecycleScope.launch {
-                withContext(Dispatchers.IO) {
-                    app.pluginRegistry.refreshExternalPlugins()
-                }
-                shelfManager.refresh()
                 reloadApps()
             }
         }
@@ -223,7 +219,14 @@ class HomeActivity : AppCompatActivity() {
         if (skipNextResumeShelfRefresh) {
             skipNextResumeShelfRefresh = false
         } else {
-            shelfManager.refresh()
+            lifecycleScope.launch {
+                withContext(Dispatchers.IO) {
+                    app.pluginRegistry.refreshExtensions()
+                    shelfRegistry.refresh()
+                }
+                shelfManager.refresh()
+                refreshSettingsIfOpen()
+            }
         }
         updateOfflineIndicator()
         ensureValidFocus()
@@ -443,11 +446,14 @@ class HomeActivity : AppCompatActivity() {
             preferences = app.launcherPreferences,
             pluginRegistry = app.pluginRegistry,
             shelfRegistry = shelfRegistry,
+            extensionRegistry = app.extensionRegistry,
             appRepository = app.appRepository,
             dockPreferences = app.dockPreferences,
             diskCache = app.diskCache,
             onSettingsChanged = { updated, pluginChanged, appsChanged ->
-                if (currentSettings.disabledShelfPluginIds != updated.disabledShelfPluginIds) shelfManager.refresh()
+                if (currentSettings.disabledShelfPluginIds != updated.disabledShelfPluginIds) {
+                    shelfManager.refresh()
+                }
                 currentSettings = updated
                 applyUiPreferences(updated)
                 app.wallpaperManager.applySettings(updated, pluginChanged)

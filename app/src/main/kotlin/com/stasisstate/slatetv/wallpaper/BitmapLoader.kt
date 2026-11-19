@@ -13,7 +13,7 @@ import androidx.exifinterface.media.ExifInterface
 import com.stasisstate.slatetv.plugin.api.BackgroundMedia
 import com.stasisstate.slatetv.NetworkClientFactory
 import com.stasisstate.slatetv.NetworkClientFactory.executeCancellable
-import com.stasisstate.slatetv.shelf.sanitizeHeaders
+import com.stasisstate.slatetv.NetworkClientFactory.sanitizeHeaders
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -100,15 +100,6 @@ class BitmapLoader(
                     decodeFileToBackdrop(entry, targetWidth, targetHeight, smartPortraitBlur)
                 }
 
-                uri.startsWith("content://") -> {
-                    val cacheKey = cacheKeyFor(media)
-                    val cached = loadContentUriToCache(uri, media.copy(id = cacheKey))
-                        ?: return@withContext null
-                    val decoded = decodeFileToBackdrop(cached, targetWidth, targetHeight, smartPortraitBlur)
-                    if (decoded == null) diskCache.remove(cacheKey)
-                    decoded
-                }
-
                 else -> null
             }
         } catch (e: CancellationException) {
@@ -148,16 +139,6 @@ class BitmapLoader(
     }
 
     fun cacheKeyFor(media: BackgroundMedia): String = "${media.id}|${media.imageUri}"
-
-    private suspend fun loadContentUriToCache(
-        uri: String,
-        media: BackgroundMedia,
-    ): WallpaperDiskCache.CachedEntry? = contentOpener.read(
-        context = context,
-        uri = uri,
-        timeoutMs = CONTENT_URI_TIMEOUT_MS,
-        maxBytes = MAX_DOWNLOAD_BYTES,
-    ) { stream -> diskCache.putStream(media, stream, MAX_DOWNLOAD_BYTES) }
 
     private suspend fun downloadToCache(media: BackgroundMedia): WallpaperDiskCache.CachedEntry? {
         val parsedUrl = media.imageUri.toHttpUrlOrNull() ?: return null
@@ -285,17 +266,12 @@ class BitmapLoader(
 
     companion object {
         const val MAX_DOWNLOAD_BYTES = 16L * 1024L * 1024L
-        private const val CONTENT_URI_TIMEOUT_MS = 10_000L
         private const val MAX_DECODED_PIXELS = 4_500_000L // ~18 MB ARGB_8888 ceiling even for panoramas
 
         internal fun parseLocalFileUri(uri: String): File? {
             if (!uri.startsWith("file:", ignoreCase = true)) return null
             return runCatching { File(java.net.URI(uri)) }.getOrNull()
         }
-
-        // Bounded, cancellation-aware, per-authority-capped reader so a stalled plugin provider cannot
-        // wedge Dispatchers.IO or starve other providers' content:// reads.
-        private val contentOpener = ContentUriOpener("slate-content-loader")
 
         internal fun calculateInSampleSize(srcW: Int, srcH: Int, reqW: Int, reqH: Int): Int {
             var inSampleSize = 1

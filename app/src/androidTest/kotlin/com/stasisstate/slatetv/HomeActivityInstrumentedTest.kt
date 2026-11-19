@@ -4,8 +4,8 @@ import android.view.View
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.stasisstate.slatetv.connector.immich.BuiltInImmichPlugin
 import com.stasisstate.slatetv.ui.HomeActivity
-import com.stasisstate.slatetv.plugin.api.PluginRequestContext
 import com.stasisstate.slatetv.wallpaper.plugins.AmbientSlatePlugin
 import com.stasisstate.slatetv.wallpaper.plugins.LocalFolderPlugin
 import kotlinx.coroutines.runBlocking
@@ -78,18 +78,13 @@ class HomeActivityInstrumentedTest {
     }
 
     @Test
-    fun pluginRegistryDiscoversBuiltInAndExternalAidlPlugins() = runBlocking {
+    fun pluginRegistryRegistersBuiltInProviders() = runBlocking {
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as SlateApplication
-        val external = app.pluginRegistry.refreshExternalPlugins()
-        val builtInIds = app.pluginRegistry.getAllPlugins()
-            .filterNot { it.metadata.isExternal }.map { it.metadata.id }.toSet()
+        app.pluginRegistry.refreshExtensions()
+        val ids = app.pluginRegistry.getAllPlugins().map { it.metadata.id }.toSet()
 
-        assertEquals(setOf(AmbientSlatePlugin.PLUGIN_ID, LocalFolderPlugin.PLUGIN_ID), builtInIds)
-        assertTrue("External sample plugin APK should be discovered", external.any { it.metadata.id == "external.sample.nordic" })
-
-        val samplePlugin = app.pluginRegistry.getPluginById("external.sample.nordic")
-        val media = samplePlugin.fetchNext(PluginRequestContext())
-        assertNotNull("External AIDL plugin must return valid BackgroundMedia over IPC", media)
-        assertTrue(media!!.imageUri.startsWith("ambient://"))
+        assertTrue(AmbientSlatePlugin.PLUGIN_ID in ids)
+        assertTrue(LocalFolderPlugin.PLUGIN_ID in ids)
+        assertTrue(BuiltInImmichPlugin.PLUGIN_ID in ids)
     }
 }

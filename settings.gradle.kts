@@ -22,11 +22,7 @@ dependencyResolutionManagement {
 
 rootProject.name = "SlateTV"
 include(":plugin-api")
-include(":plugin-immich")
-include(":plugin-sample-external")
-include(":app")
-
-include(":plugin-jellyfin")
 include(":connector-immich")
 include(":connector-livetv")
 include(":connector-extensions")
+include(":app")
