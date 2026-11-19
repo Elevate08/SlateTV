@@ -1,7 +1,9 @@
 package com.stasisstate.slatetv.plugin.immich
 
 import kotlinx.coroutines.test.runTest
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Request
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -10,6 +12,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -250,6 +253,37 @@ class ImmichApiClientTest {
         } finally {
             otherServer.shutdown()
         }
+    }
+
+    @Test
+    fun `HTTP 303 POST redirect becomes GET and strips body representation headers`() {
+        server.enqueue(MockResponse().setResponseCode(303).addHeader("Location", "/api/done"))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("ok"))
+
+        val http = ImmichApiClient.defaultClient(allowUntrustedTls = false)
+        val body = "{}".toRequestBody("application/json".toMediaType())
+        val req = Request.Builder()
+            .url(server.url("/api/submit"))
+            .header("Content-Encoding", "identity")
+            .header("Content-Language", "en")
+            .header("Transfer-Encoding", "identity")
+            .post(body)
+            .build()
+        http.newCall(req).execute().use { assertEquals(200, it.code) }
+
+        val first = server.takeRequest()
+        assertEquals("POST", first.method)
+        assertEquals("application/json; charset=utf-8", first.getHeader("Content-Type"))
+
+        val second = server.takeRequest()
+        assertEquals("GET", second.method)
+        assertEquals("/api/done", second.path)
+        assertEquals(0L, second.bodySize)
+        assertNull(second.getHeader("Content-Type"))
+        assertNull(second.getHeader("Content-Encoding"))
+        assertNull(second.getHeader("Content-Language"))
+        assertNull(second.getHeader("Transfer-Encoding"))
+        assertNull(second.getHeader("Content-Length"))
     }
 
     @Test

@@ -10,6 +10,8 @@ import com.stasisstate.slatetv.plugin.api.BackgroundMedia
 import com.stasisstate.slatetv.plugin.api.BackgroundPlugin
 import com.stasisstate.slatetv.plugin.api.PluginMetadata
 import com.stasisstate.slatetv.plugin.api.PluginRequestContext
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -149,6 +151,58 @@ class LauncherCoreUnitTest {
         // Extreme 12000x1000 panorama (12M pixels) must be downsampled to <= 4.5M pixels
         val panoSample = BitmapLoader.calculateInSampleSize(12000, 1000, 1920, 1080)
         assertTrue("Panorama must be downsampled (got $panoSample)", panoSample >= 2)
+    }
+
+    @Test
+    fun `NetworkClientFactory 303 POST redirect becomes GET and strips body representation headers`() {
+        val captured = java.util.concurrent.LinkedBlockingQueue<String>()
+        java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1")).use { listener ->
+            val serverThread = Thread {
+                repeat(2) { index ->
+                    listener.accept().use { socket ->
+                        val input = socket.getInputStream().bufferedReader(Charsets.ISO_8859_1)
+                        val head = StringBuilder()
+                        var contentLength = 0
+                        while (true) {
+                            val line = input.readLine() ?: break
+                            if (line.isEmpty()) break
+                            head.append(line).append("\n")
+                            if (line.startsWith("Content-Length:", ignoreCase = true)) {
+                                contentLength = line.substringAfter(":").trim().toInt()
+                            }
+                        }
+                        repeat(contentLength) { input.read() }
+                        captured.offer(head.toString())
+                        val response = if (index == 0) {
+                            "HTTP/1.1 303 See Other\r\nLocation: /done\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        } else {
+                            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        }
+                        socket.getOutputStream().apply { write(response.toByteArray()); flush() }
+                    }
+                }
+            }.apply { isDaemon = true; start() }
+
+            val client = com.stasisstate.slatetv.NetworkClientFactory.defaultClient()
+            val request = okhttp3.Request.Builder()
+                .url("http://127.0.0.1:${listener.localPort}/submit")
+                .header("Content-Encoding", "identity")
+                .header("Content-Language", "en")
+                .header("Transfer-Encoding", "identity")
+                .post("{}".toRequestBody("application/json".toMediaTypeOrNull()))
+                .build()
+            client.newCall(request).execute().use { assertEquals(200, it.code) }
+            serverThread.join(5000)
+
+            val first = captured.poll(1, java.util.concurrent.TimeUnit.SECONDS)!!
+            assertTrue(first, first.startsWith("POST /submit"))
+            assertTrue(first, first.contains("Content-Type: application/json", ignoreCase = true))
+            val second = captured.poll(1, java.util.concurrent.TimeUnit.SECONDS)!!
+            assertTrue(second, second.startsWith("GET /done"))
+            for (name in listOf("Content-Type", "Content-Length", "Content-Encoding", "Content-Language", "Transfer-Encoding")) {
+                assertFalse("$name leaked: $second", second.contains("$name:", ignoreCase = true))
+            }
+        }
     }
 
     @Test

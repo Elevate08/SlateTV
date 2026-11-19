@@ -2,7 +2,9 @@ package com.stasisstate.slatetv.plugin.jellyfin
 
 import kotlinx.coroutines.runBlocking
 import okhttp3.FormBody
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Request
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -102,6 +104,30 @@ class JellyfinApiClientTest {
                 assertNull(request.getHeader("Authorization"))
                 assertNull(request.getHeader("X-Emby-Token"))
             }
+        }
+    }
+
+    @Test fun http303PostRedirectBecomesGetAndStripsBodyRepresentationHeaders() = MockWebServer().use { server ->
+        server.enqueue(MockResponse().setResponseCode(303).addHeader("Location", "/jellyfin/done"))
+        server.json("ok")
+        val body = "{}".toRequestBody("application/json".toMediaType())
+        val request = Request.Builder().url(server.url("/jellyfin/submit"))
+            .header("Authorization", "token")
+            .header("Content-Encoding", "identity")
+            .header("Content-Language", "en")
+            .header("Transfer-Encoding", "identity")
+            .post(body).build()
+        server.client().client.newCall(request).execute().use { assertEquals(200, it.code) }
+        val first = server.takeRequest()
+        assertEquals("POST", first.method)
+        assertEquals("application/json; charset=utf-8", first.getHeader("Content-Type"))
+        val second = server.takeRequest()
+        assertEquals("GET", second.method)
+        assertEquals("/jellyfin/done", second.path)
+        assertEquals("token", second.getHeader("Authorization"))
+        assertEquals(0L, second.bodySize)
+        for (name in listOf("Content-Type", "Content-Length", "Content-Encoding", "Content-Language", "Transfer-Encoding")) {
+            assertNull(name, second.getHeader(name))
         }
     }
 

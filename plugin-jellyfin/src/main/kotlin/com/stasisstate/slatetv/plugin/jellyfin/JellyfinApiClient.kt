@@ -80,13 +80,17 @@ private fun JSONObject.program() = Program(
 private fun JSONArray.objects() = (0 until length()).mapNotNull(::optJSONObject)
 private fun JSONObject.items() = optJSONArray("Items")?.objects().orEmpty()
 
+/** Headers describing a request body; dropped when a 303 switches the request to bodyless GET (RFC 9110 §15.4). */
+private val BODY_REPRESENTATION_HEADERS =
+    listOf("Content-Type", "Content-Length", "Content-Encoding", "Content-Language", "Transfer-Encoding")
+
 class JellyfinApiClient(private val config: JellyfinConfig) {
     private val base = requireNotNull(parseServerUrl(config.serverUrl)) { "Enter a valid Jellyfin server URL." }
     init { require(validApiKey(config.apiKey)) { "Enter a valid API key." } }
 
     val authorization = """MediaBrowser Client="Slate TV Jellyfin", Device="Android TV", DeviceId="slatetv-jellyfin", Version="1.0.0", Token="${config.apiKey}""""
     private val insecureLan = config.allowUntrustedTls && base.isHttps
-    private val client = OkHttpClient.Builder()
+    internal val client = OkHttpClient.Builder()
         .connectTimeout(6, SECONDS).readTimeout(10, SECONDS).callTimeout(15, SECONDS)
         .followRedirects(false).followSslRedirects(false)
         .addInterceptor { chain ->
@@ -106,6 +110,7 @@ class JellyfinApiClient(private val config: JellyfinConfig) {
                 request = request.newBuilder().url(target).apply {
                     if (code == 303 && request.method != "GET" && request.method != "HEAD") {
                         method("GET", null)
+                        BODY_REPRESENTATION_HEADERS.forEach(::removeHeader)
                     }
                     if (!sameOrigin) {
                         removeHeader("Authorization")

@@ -34,8 +34,11 @@ android {
 
         val pinnedHostSha256 = providers.gradleProperty("trustedSlateCertSha256").orNull.orEmpty()
             .replace(":", "")
-            .trim()
+            .replace(Regex("\\s"), "")
             .lowercase()
+        if (pinnedHostSha256.isNotEmpty() && !Regex("^[0-9a-f]{64}$").matches(pinnedHostSha256)) {
+            throw GradleException("trustedSlateCertSha256 must be a 64-character SHA-256 hex digest")
+        }
         buildConfigField("String", "TRUSTED_SLATE_CERT_SHA256", "\"$pinnedHostSha256\"")
     }
 

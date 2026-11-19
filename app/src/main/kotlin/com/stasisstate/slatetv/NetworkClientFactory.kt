@@ -11,6 +11,10 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resumeWithException
 
 object NetworkClientFactory {
+    /** Headers describing a request body; dropped when a 303 switches the request to bodyless GET (RFC 9110 §15.4). */
+    private val BODY_REPRESENTATION_HEADERS =
+        listOf("Content-Type", "Content-Length", "Content-Encoding", "Content-Language", "Transfer-Encoding")
+
     suspend fun OkHttpClient.executeCancellable(request: Request): Response {
         val call = newCall(request)
         return suspendCancellableCoroutine { cont ->
@@ -56,6 +60,7 @@ object NetworkClientFactory {
                     val nextBuilder = currentReq.newBuilder().url(nextUrl)
                     if (code == 303 && currentReq.method != "GET" && currentReq.method != "HEAD") {
                         nextBuilder.method("GET", null)
+                        BODY_REPRESENTATION_HEADERS.forEach(nextBuilder::removeHeader)
                     }
                     if (!sameOrigin) {
                         currentReq.headers.names().forEach(nextBuilder::removeHeader)

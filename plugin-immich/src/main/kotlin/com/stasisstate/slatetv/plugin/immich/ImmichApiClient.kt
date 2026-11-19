@@ -486,6 +486,10 @@ class ImmichApiClient(
 
     companion object {
         const val HEADER_API_KEY = "x-api-key"
+
+        /** Headers describing a request body; dropped when a 303 switches the request to bodyless GET (RFC 9110 §15.4). */
+        private val BODY_REPRESENTATION_HEADERS =
+            listOf("Content-Type", "Content-Length", "Content-Encoding", "Content-Language", "Transfer-Encoding")
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val ROTATED_EXIF_ORIENTATIONS = setOf("5", "6", "7", "8")
         private const val MAX_RECENT_PAGES = 10
@@ -543,6 +547,7 @@ class ImmichApiClient(
                         val nextBuilder = currentReq.newBuilder().url(nextUrl)
                         if (code == 303 && currentReq.method != "GET" && currentReq.method != "HEAD") {
                             nextBuilder.method("GET", null)
+                            BODY_REPRESENTATION_HEADERS.forEach(nextBuilder::removeHeader)
                         }
                         if (!sameOrigin) {
                             nextBuilder.removeHeader(HEADER_API_KEY)
