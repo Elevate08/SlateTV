@@ -5,7 +5,11 @@ import com.stasisstate.slatetv.plugin.api.ISlateBackgroundPlugin
 import com.stasisstate.slatetv.plugin.api.PluginContract
 import com.stasisstate.slatetv.plugin.api.PluginMediaItem
 import com.stasisstate.slatetv.plugin.api.PluginRequestContext
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -17,6 +21,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.TimeUnit
 
 class ImmichBackgroundPluginServiceTest {
@@ -152,6 +158,165 @@ class ImmichBackgroundPluginServiceTest {
             } finally {
                 scope.cancel()
             }
+        }
+    }
+
+    private val configuredStore = object : ImmichConfigStore {
+        override fun load() = ImmichConfig(serverUrl = "https://immich.local", apiKey = "test-key")
+        override fun save(config: ImmichConfig) = Unit
+    }
+
+    private fun photo(id: String) = media.copy(id = id)
+
+    @Test
+    fun `take returns items from a refill that completes inline before the wait subscribes`() {
+        // Unconfined runs the refill body synchronously inside ensureRefillLocked (while take holds the
+        // reentrant lock), so the refill enqueues, clears itemSignal and finishes before take subscribes.
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val buffer = ImmichMediaBuffer(
+                ImmichApiClient(),
+                refillScope = scope,
+                rpcWaitBudgetMs = 2_000L,
+                prefetchOverride = { _, _ -> listOf(photo("a"), photo("b")) },
+            )
+            val startNs = System.nanoTime()
+            val result = runBlocking { buffer.take(1, PluginRequestContext(), configuredStore) { _, _ -> null } }
+            val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
+            assertEquals(listOf("a"), result.map { it.id })
+            assertTrue("Ready item must be returned without waiting ($elapsedMs ms)", elapsedMs < 500L)
+            // Remaining item stays buffered for the next call
+            val next = runBlocking { buffer.take(1, PluginRequestContext(), configuredStore) { _, _ -> null } }
+            assertEquals(listOf("b"), next.map { it.id })
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `take wakes when a gated refill enqueues after the caller subscribed`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val prefetchStarted = CountDownLatch(1)
+        val release = CompletableDeferred<Unit>()
+        try {
+            val buffer = ImmichMediaBuffer(
+                ImmichApiClient(),
+                refillScope = scope,
+                rpcWaitBudgetMs = 2_000L,
+                prefetchOverride = { _, _ ->
+                    prefetchStarted.countDown()
+                    release.await()
+                    listOf(photo("late"))
+                },
+            )
+            val result = runBlocking {
+                val pending = async(Dispatchers.Default) {
+                    buffer.take(1, PluginRequestContext(), configuredStore) { _, _ -> null }
+                }
+                assertTrue(prefetchStarted.await(1, TimeUnit.SECONDS))
+                delay(50L) // let take subscribe to itemSignal
+                release.complete(Unit)
+                pending.await()
+            }
+            assertEquals(listOf("late"), result.map { it.id })
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `refill completing between ready check and subscribe cannot strand the item`() {
+        // Deterministically drives the old lost wake-up window: the refill is released and given ample
+        // time to enqueue + complete + clear itemSignal after take saw an empty queue but before it
+        // subscribed. With the check and subscription under one lock, the refill must instead wait for
+        // the subscription, so take wakes with the item rather than timing out or returning empty.
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val release = CompletableDeferred<Unit>()
+        try {
+            val buffer = ImmichMediaBuffer(
+                ImmichApiClient(),
+                refillScope = scope,
+                rpcWaitBudgetMs = 2_000L,
+                prefetchOverride = { _, _ ->
+                    release.await()
+                    listOf(photo("raced"))
+                },
+            )
+            var hookCalls = 0
+            buffer.beforeSubscribeLocked = {
+                if (hookCalls++ == 0) {
+                    release.complete(Unit)
+                    Thread.sleep(150L)
+                }
+            }
+            val startNs = System.nanoTime()
+            val result = runBlocking { buffer.take(1, PluginRequestContext(), configuredStore) { _, _ -> null } }
+            val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
+            assertEquals(listOf("raced"), result.map { it.id })
+            assertTrue("Should wake as soon as the item lands ($elapsedMs ms)", elapsedMs < 1_500L)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `take returns empty promptly when the refill finishes without items`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val prefetchCalls = AtomicInteger()
+        try {
+            val buffer = ImmichMediaBuffer(
+                ImmichApiClient(),
+                refillScope = scope,
+                rpcWaitBudgetMs = 2_000L,
+                prefetchOverride = { _, _ ->
+                    prefetchCalls.incrementAndGet()
+                    delay(20L)
+                    emptyList()
+                },
+            )
+            val startNs = System.nanoTime()
+            val result = runBlocking { buffer.take(1, PluginRequestContext(), configuredStore) { _, _ -> null } }
+            val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
+            assertTrue(result.isEmpty())
+            assertTrue("Should not wait out the RPC budget ($elapsedMs ms)", elapsedMs < 1_000L)
+            assertEquals(1, prefetchCalls.get())
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `stress - no lost wake-up when refills race with take`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val random = java.util.Random(42)
+            repeat(2_000) { iteration ->
+                val spinNs = random.nextInt(60_000).toLong()
+                val source = AtomicInteger(1) // one photo per iteration, handed out by a single refill
+                val buffer = ImmichMediaBuffer(
+                    ImmichApiClient(),
+                    refillScope = scope,
+                    rpcWaitBudgetMs = 2_000L,
+                    prefetchOverride = { _, _ ->
+                        // Vary timing so enqueue/complete lands on both sides of take's subscription.
+                        val until = System.nanoTime() + spinNs
+                        while (System.nanoTime() < until) Unit
+                        if (source.getAndDecrement() > 0) listOf(photo("s$iteration")) else emptyList()
+                    },
+                )
+                val results = runBlocking {
+                    (0 until 2).map {
+                        async(Dispatchers.Default) {
+                            buffer.take(1, PluginRequestContext(), configuredStore) { _, _ -> null }
+                        }
+                    }.awaitAll()
+                }
+                val served = results.flatten().map { it.id }
+                // Exactly one photo exists per iteration: it must be delivered once, never stranded in the queue.
+                assertEquals("Iteration $iteration lost the ready item: $results", listOf("s$iteration"), served)
+            }
+        } finally {
+            scope.cancel()
         }
     }
 }

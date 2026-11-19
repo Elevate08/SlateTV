@@ -15,6 +15,7 @@ import com.stasisstate.slatetv.plugin.api.PluginRequestContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -43,7 +44,7 @@ internal object ImmichRuntime {
  * Ensures Binder RPCs (`getNextMedia` / `getMediaBatch`) never block past Slate TV's 4s deadline
  * during Immich album searches or self-signed TLS image caching:
  * - Warm hits return immediately from [readyQueue] and trigger async refill in the background.
- * - Cold misses wait at most [rpcWaitBudgetMs] (3.2s) for the first ready item while background
+ * - Cold misses wait at most [rpcWaitBudgetMs] (2.8s, leaving 1.2s headroom) for the first ready item while background
  *   refill continues warming the remaining batch for the host's next retry.
  */
 internal class ImmichMediaBuffer(
@@ -52,6 +53,8 @@ internal class ImmichMediaBuffer(
     private val rpcWaitBudgetMs: Long = RPC_WAIT_BUDGET_MS,
     private val handoffGraceMs: Long = HANDOFF_GRACE_MS,
     private val nowMs: () -> Long = { System.nanoTime() / 1_000_000L },
+    /** Test seam: replaces [ImmichBackgroundPlugin.prefetch] when non-null. */
+    private val prefetchOverride: (suspend (PluginRequestContext, Int) -> List<BackgroundMedia>)? = null,
 ) {
     private val stateLock = Any()
     private val readyQueue = ArrayDeque<PluginMediaItem>()
@@ -62,6 +65,10 @@ internal class ImmichMediaBuffer(
 
     /** Cached media names handed to Slate TV, with handoff time, kept alive for [handoffGraceMs]. */
     private val recentHandoffs = ArrayDeque<Pair<String, Long>>()
+
+    /** Test seam: invoked while holding [stateLock] right before a waiting `take` subscribes to [itemSignal]. */
+    @Volatile
+    internal var beforeSubscribeLocked: (() -> Unit)? = null
 
     /**
      * Cache file names that must not be evicted: every `content://` item still queued plus items
@@ -113,25 +120,32 @@ internal class ImmichMediaBuffer(
     ): List<PluginMediaItem> {
         if (limit <= 0) return emptyList()
 
-        val immediate = synchronized(stateLock) {
-            val popped = popReadyLocked(limit, request.lastMediaId)
-            recordHandoffsLocked(popped)
-            if (readyQueue.size < LOW_WATERMARK) {
-                ensureRefillLocked(store, request, publishLocal)
-            }
-            popped
-        }
-        if (immediate.isNotEmpty()) return immediate
-
         return withTimeoutOrNull<List<PluginMediaItem>>(rpcWaitBudgetMs) {
+            var mayStartRefill = true
             while (true) {
-                val ready = synchronized(stateLock) {
-                    popReadyLocked(limit, request.lastMediaId).also(::recordHandoffsLocked)
-                }
-                if (ready.isNotEmpty()) return@withTimeoutOrNull ready
-
+                // Pop, refill check/start and signal subscription happen under ONE lock acquisition so a
+                // refill cannot enqueue an item and clear [itemSignal] between our check and subscribe.
                 val signal = synchronized(stateLock) {
+                    var ready = popReadyLocked(limit, request.lastMediaId)
+                    if (ready.isNotEmpty()) {
+                        recordHandoffsLocked(ready)
+                    }
+                    // Top up whenever we return items; on an empty queue only the first pass may start a
+                    // refill, so a refill that yields nothing returns empty instead of spinning new refills
+                    // until the RPC budget expires.
+                    if ((mayStartRefill || ready.isNotEmpty()) && readyQueue.size < LOW_WATERMARK) {
+                        ensureRefillLocked(store, request, publishLocal)
+                        // A refill dispatched inline (or one that finished instantly) may already have
+                        // enqueued items while we held the (reentrant) lock.
+                        if (ready.isEmpty()) {
+                            ready = popReadyLocked(limit, request.lastMediaId)
+                            if (ready.isNotEmpty()) recordHandoffsLocked(ready)
+                        }
+                    }
+                    mayStartRefill = false
+                    if (ready.isNotEmpty()) return@withTimeoutOrNull ready
                     if (activeRefill?.isActive != true) return@withTimeoutOrNull emptyList()
+                    beforeSubscribeLocked?.invoke()
                     itemSignal ?: CompletableDeferred<Unit>().also { itemSignal = it }
                 }
                 signal.await()
@@ -164,12 +178,15 @@ internal class ImmichMediaBuffer(
         if (activeRefill?.isActive == true) return
         val gen = configGeneration
         val activePlugin = plugin ?: ImmichBackgroundPlugin(store, api).also { plugin = it }
-        var launchedJob: Job? = null
-        launchedJob = refillScope.launch {
+        lateinit var launchedJob: Job
+        // LAZY so [activeRefill] is assigned before the body (and its finally block) can run, keeping the
+        // `activeRefill === launchedJob` identity check race-free even when the refill completes instantly.
+        launchedJob = refillScope.launch(start = CoroutineStart.LAZY) {
             try {
                 val config = store.load()
                 if (!config.isConfigured) return@launch
-                val candidates = activePlugin.prefetch(request, TARGET_READY_COUNT)
+                val candidates = prefetchOverride?.invoke(request, TARGET_READY_COUNT)
+                    ?: activePlugin.prefetch(request, TARGET_READY_COUNT)
                 for (item in candidates) {
                     if (!isActive) break
                     val converted = item.forExternalHost {
@@ -204,10 +221,11 @@ internal class ImmichMediaBuffer(
             }
         }
         activeRefill = launchedJob
+        launchedJob.start()
     }
 
     companion object {
-        private const val RPC_WAIT_BUDGET_MS = 3_200L
+        private const val RPC_WAIT_BUDGET_MS = 2_800L
         private const val LOW_WATERMARK = 3
         private const val TARGET_READY_COUNT = 4
         private const val MAX_READY_ITEMS = 8
