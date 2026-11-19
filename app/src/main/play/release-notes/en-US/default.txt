@@ -1,0 +1,1 @@
+Meet Slate TV, a gallery-first Android TV launcher with rotating photo backgrounds, a pinned app dock, and an All Apps grid. Install the optional Immich Photos and Jellyfin Live TV plugins to bring your own photos and program guide to Home.

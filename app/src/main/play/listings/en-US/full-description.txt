@@ -1,0 +1,7 @@
+Slate TV is a minimal, gallery-first launcher for Android TV. A full-screen photo backdrop sets the scene, with a clock, photo captions, and a dock for your favorite apps. Open All Apps to find the rest, or let the home screen fade into an idle gallery.
+
+Slate TV is designed to recover gracefully when NVIDIA Shield wakes from sleep, including cases where the home screen would otherwise stay black. No Accessibility Service is required.
+
+Open AIDL interfaces let independently installable plugins add backgrounds and home shelves. The Immich Photos plugin turns photos from your own Immich server into rotating backdrops. The Jellyfin Live TV plugin brings current programs and airing progress to the home shelf, with a Full Guide for browsing the schedule. Install the plugins separately and connect them to your own servers. Jellyfin Live TV requires a configured tuner and guide source on your server.
+
+Slate TV is free, with zero ads and zero paywalls. The optional Tip Jar supports development. A tip unlocks nothing, and every launcher feature is available without a purchase.

@@ -1,0 +1,1 @@
+A minimal Android TV launcher with a photo gallery, app dock, and live TV.
