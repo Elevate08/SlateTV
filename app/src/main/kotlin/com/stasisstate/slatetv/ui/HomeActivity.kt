@@ -355,6 +355,7 @@ class HomeActivity : AppCompatActivity() {
 
     private fun setupActionPills() {
         configurePill(btnAllApps, "All Apps") {
+            shelfController.clearPendingFocus()
             hudContainer.visibility = View.INVISIBLE
             allAppsController.open()
         }
@@ -362,6 +363,7 @@ class HomeActivity : AppCompatActivity() {
             app.wallpaperManager.requestNext(forceFresh = true)
         }
         configurePill(btnSettings, "Settings") {
+            shelfController.clearPendingFocus()
             hudContainer.visibility = View.INVISIBLE
             tipJar.connect()
             settingsController.open(app.wallpaperManager.state.value.lastSyncStatus)
@@ -598,6 +600,7 @@ class HomeActivity : AppCompatActivity() {
     private fun enterIdleGalleryMode() {
         if (isIdleGalleryMode || isContextMenuOpen || allAppsController.isVisible || settingsController.isVisible) return
         isIdleGalleryMode = true
+        shelfController.clearPendingFocus()
         hudContainer.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         hudContainer.clearFocus()
         hudContainer.animate()
@@ -632,6 +635,7 @@ class HomeActivity : AppCompatActivity() {
     }
 
     private fun restoreDockFocus() {
+        shelfController.clearPendingFocus()
         if (lastDockFocus?.takeIf { it.isAttachedToWindow && it.isShown }?.requestFocus() != true &&
             dockRecyclerView.getChildAt(0)?.requestFocus() != true) btnAllApps.requestFocus()
     }
