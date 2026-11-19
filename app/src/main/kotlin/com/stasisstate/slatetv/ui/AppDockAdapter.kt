@@ -18,6 +18,10 @@ class AppDockAdapter(
 ) : RecyclerView.Adapter<AppDockAdapter.DockViewHolder>() {
 
     private val items = mutableListOf<AppInfo>()
+    private var reorderingPackage: String? = null
+
+    val currentList: List<AppInfo>
+        get() = items.toList()
 
     init {
         setHasStableIds(true)
@@ -25,7 +29,19 @@ class AppDockAdapter(
 
     override fun getItemId(position: Int): Long = items[position].packageName.hashCode().toLong()
 
-    fun submitList(apps: List<AppInfo>) {
+    fun setReorderingPackage(packageName: String?) {
+        if (reorderingPackage == packageName) return
+        val previous = reorderingPackage
+        reorderingPackage = packageName
+        val positions = listOfNotNull(indexOfPackage(previous), indexOfPackage(packageName)).distinct()
+        if (positions.isEmpty()) {
+            if (itemCount > 0) notifyDataSetChanged()
+        } else {
+            positions.forEach { notifyItemChanged(it) }
+        }
+    }
+
+    fun submitList(apps: List<AppInfo>, commitCallback: (() -> Unit)? = null) {
         val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
             override fun getOldListSize(): Int = items.size
             override fun getNewListSize(): Int = apps.size
@@ -41,6 +57,13 @@ class AppDockAdapter(
         items.clear()
         items.addAll(apps)
         diff.dispatchUpdatesTo(this)
+        commitCallback?.invoke()
+    }
+
+    private fun indexOfPackage(packageName: String?): Int? {
+        if (packageName == null) return null
+        val index = items.indexOfFirst { it.packageName == packageName }
+        return index.takeIf { it >= 0 }
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): DockViewHolder {
@@ -60,8 +83,10 @@ class AppDockAdapter(
         private val fallbackContainer: View = itemView.findViewById(R.id.appIconFallbackContainer)
         private val iconImage: ImageView = itemView.findViewById(R.id.appIconImage)
         private val shortTitle: TextView = itemView.findViewById(R.id.appShortTitle)
+        private val reorderHint: TextView = itemView.findViewById(R.id.reorderHint)
 
         fun bind(app: AppInfo) {
+            val reordering = reorderingPackage != null && app.packageName == reorderingPackage
             if (app.banner != null) {
                 bannerImage.setImageDrawable(app.banner)
                 bannerImage.visibility = View.VISIBLE
@@ -73,6 +98,8 @@ class AppDockAdapter(
                 iconImage.setImageDrawable(app.icon)
                 shortTitle.text = app.label
             }
+            itemView.isActivated = reordering
+            reorderHint.visibility = if (reordering) View.VISIBLE else View.GONE
 
             itemView.setOnClickListener { onAppClick(app) }
             itemView.setOnLongClickListener {
@@ -87,19 +114,29 @@ class AppDockAdapter(
                     false
                 }
             }
-            itemView.setOnFocusChangeListener { v, hasFocus ->
-                val scale = if (hasFocus) 1.08f else 1.0f
-                val elevation = if (hasFocus) 12f else 0f
-                v.animate()
+            fun applyChrome(target: View, hasFocus: Boolean) {
+                val scale = when {
+                    hasFocus && reordering -> 1.16f
+                    hasFocus || reordering -> 1.08f
+                    else -> 1.0f
+                }
+                val elevation = when {
+                    reordering -> 22f
+                    hasFocus -> 12f
+                    else -> 0f
+                }
+                target.animate()
                     .scaleX(scale)
                     .scaleY(scale)
                     .translationZ(elevation)
                     .setDuration(130L)
                     .start()
-                if (hasFocus) {
-                    onAppFocused(app)
-                }
             }
+            itemView.setOnFocusChangeListener { v, hasFocus ->
+                applyChrome(v, hasFocus)
+                if (hasFocus) onAppFocused(app)
+            }
+            applyChrome(itemView, itemView.hasFocus())
         }
     }
 }

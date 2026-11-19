@@ -98,9 +98,13 @@ class HomeActivity : AppCompatActivity() {
     private lateinit var tipJar: TipJar
 
     private var allInstalledApps: List<AppInfo> = emptyList()
+    private var dockApps: List<AppInfo> = emptyList()
     private var currentSettings: LauncherSettings = LauncherSettings()
     private var isIdleGalleryMode = false
     private var isContextMenuOpen = false
+    private var reorderingPackageName: String? = null
+    private var reorderingLabel: String? = null
+    private val dockReorder = DockReorderController()
     private var skipNextResumeShelfRefresh = false
     private var wallpaperCollectJob: Job? = null
     private var tipJarCollectJob: Job? = null
@@ -228,6 +232,7 @@ class HomeActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        exitDockReorderMode()
         super.onPause()
         mainHandler.removeCallbacks(enterIdleRunnable)
         app.wallpaperManager.onPause()
@@ -252,6 +257,7 @@ class HomeActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         // Pressing Home closes any open overlay and restores the calm home screen
+        exitDockReorderMode()
         if (allAppsController.isVisible) allAppsController.close()
         if (settingsController.isVisible) settingsController.close()
         exitIdleGalleryMode()
@@ -270,6 +276,7 @@ class HomeActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (handleDockReorderKey(event)) return true
         if (event.action == KeyEvent.ACTION_DOWN) {
             if (isIdleGalleryMode) {
                 exitIdleGalleryMode()
@@ -333,6 +340,7 @@ class HomeActivity : AppCompatActivity() {
 
     private fun handleBackNavigation() {
         when {
+            reorderingPackageName != null -> exitDockReorderMode()
             settingsController.isVisible -> settingsController.close()
             allAppsController.isVisible -> allAppsController.close()
             isIdleGalleryMode -> {
@@ -363,9 +371,20 @@ class HomeActivity : AppCompatActivity() {
 
     private fun setupDock() {
         dockAdapter = AppDockAdapter(
-            onAppClick = { launchApp(it) },
-            onAppLongClick = { showAppContextMenu(it, fromDock = true) },
-            onAppFocused = { focusedLabelText.text = it.label },
+            onAppClick = { info ->
+                if (reorderingPackageName != null) exitDockReorderMode() else launchApp(info)
+            },
+            onAppLongClick = { info ->
+                if (reorderingPackageName == null) showAppContextMenu(info, fromDock = true)
+            },
+            onAppFocused = { info ->
+                val reordering = reorderingPackageName
+                focusedLabelText.text = if (reordering != null) {
+                    DockReorderController.prompt(reorderingLabel ?: info.label)
+                } else {
+                    info.label
+                }
+            },
         )
         dockRecyclerView.layoutManager =
             LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
@@ -541,12 +560,26 @@ class HomeActivity : AppCompatActivity() {
             val byPkg = visibleApps.associateBy { it.packageName }
 
             val pinnedOrder = app.dockPreferences.getPinnedPackages()
-            val dockApps = pinnedOrder.mapNotNull { byPkg[it] }
+            val loadedDock = pinnedOrder.mapNotNull { byPkg[it] }
                 .ifEmpty { visibleApps.take(6) }
+            dockApps = loadedDock
 
-            dockAdapter.submitList(dockApps)
+            val reordering = reorderingPackageName
+            if (reordering != null && reordering !in pinnedOrder) {
+                exitDockReorderMode()
+            } else if (reordering != null) {
+                dockReorder.syncOrder(pinnedOrder)
+                dockAdapter.setReorderingPackage(reordering)
+            }
+            dockAdapter.submitList(loadedDock) {
+                if (reorderingPackageName != null) {
+                    focusDockPackage(reorderingPackageName!!)
+                }
+            }
             allAppsController.updateApps(visibleApps, pinnedOrder.toSet())
-            dockRecyclerView.post { ensureValidFocus() }
+            if (reorderingPackageName == null) {
+                dockRecyclerView.post { ensureValidFocus() }
+            }
         }
     }
 
@@ -602,13 +635,8 @@ class HomeActivity : AppCompatActivity() {
         }
 
         if (fromDock && isPinned) {
-            addOption("Move Left") {
-                app.dockPreferences.movePinned(appInfo.packageName, -1)
-                reloadApps()
-            }
-            addOption("Move Right") {
-                app.dockPreferences.movePinned(appInfo.packageName, +1)
-                reloadApps()
+            addOption("Move / Reorder") {
+                enterDockReorderMode(appInfo)
             }
             addOption("Unpin from Dock") {
                 app.dockPreferences.unpin(appInfo.packageName)
@@ -649,8 +677,99 @@ class HomeActivity : AppCompatActivity() {
         firstOption?.requestFocus()
     }
 
+    private fun handleDockReorderKey(event: KeyEvent): Boolean {
+        return when (val result = dockReorder.onKey(event.keyCode, event.action, event.repeatCount)) {
+            DockReorderController.KeyResult.Ignore -> false
+            DockReorderController.KeyResult.Consume -> {
+                reorderingPackageName?.let { focusDockPackage(it) }
+                true
+            }
+            is DockReorderController.KeyResult.Moved -> {
+                val pkg = reorderingPackageName ?: return true
+                val delta = if (event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1
+                app.dockPreferences.movePinned(pkg, delta)
+                val persisted = app.dockPreferences.getPinnedPackages()
+                if (persisted != dockReorder.order) dockReorder.syncOrder(persisted)
+                if (!dockReorder.active || reorderingPackageName !in persisted) {
+                    exitDockReorderMode()
+                } else {
+                    publishDockOrder(pkg)
+                }
+                true
+            }
+            is DockReorderController.KeyResult.Exit -> {
+                exitDockReorderMode()
+                true
+            }
+        }
+    }
+
+    private fun enterDockReorderMode(appInfo: AppInfo) {
+        val pinned = app.dockPreferences.getPinnedPackages()
+        if (!dockReorder.enter(appInfo.packageName, pinned)) return
+        reorderingPackageName = appInfo.packageName
+        reorderingLabel = appInfo.label
+        dockAdapter.setReorderingPackage(appInfo.packageName)
+        focusedLabelText.text = DockReorderController.prompt(appInfo.label)
+        mainHandler.removeCallbacks(enterIdleRunnable)
+        publishDockOrder(appInfo.packageName)
+    }
+
+    private fun exitDockReorderMode() {
+        val pkg = reorderingPackageName ?: return
+        val label = reorderingLabel
+        reorderingPackageName = null
+        reorderingLabel = null
+        dockReorder.exit()
+        if (::dockAdapter.isInitialized) dockAdapter.setReorderingPackage(null)
+        if (::focusedLabelText.isInitialized) focusedLabelText.text = label.orEmpty()
+        if (::dockRecyclerView.isInitialized) focusDockPackage(pkg)
+        if (::settingsController.isInitialized) resetIdleTimer()
+    }
+
+    /**
+     * Rebuilds the visible dock from the persisted pin order and the apps already loaded,
+     * then locks focus on [packageName] at its new adapter index.
+     */
+    private fun publishDockOrder(packageName: String) {
+        val known = (dockApps + dockAdapter.currentList).associateBy { it.packageName }
+        val updated = dockReorder.order.mapNotNull { known[it] }
+        if (updated.isEmpty()) {
+            focusDockPackage(packageName)
+            return
+        }
+        dockApps = updated
+        val newIndex = updated.indexOfFirst { it.packageName == packageName }
+        dockAdapter.submitList(updated) {
+            if (newIndex < 0) return@submitList
+            dockRecyclerView.scrollToPosition(newIndex)
+            dockRecyclerView.findViewHolderForAdapterPosition(newIndex)?.itemView?.requestFocus()
+            dockRecyclerView.post {
+                dockRecyclerView.scrollToPosition(newIndex)
+                dockRecyclerView.findViewHolderForAdapterPosition(newIndex)?.itemView?.requestFocus()
+            }
+        }
+        reorderingLabel?.let { focusedLabelText.text = DockReorderController.prompt(it) }
+    }
+
+    private fun focusDockPackage(packageName: String) {
+        val index = dockAdapter.currentList.indexOfFirst { it.packageName == packageName }
+        if (index < 0) return
+        dockRecyclerView.scrollToPosition(index)
+        val focused = dockRecyclerView.findViewHolderForAdapterPosition(index)?.itemView
+        if (focused?.hasFocus() != true) focused?.requestFocus()
+        dockRecyclerView.post {
+            dockRecyclerView.scrollToPosition(index)
+            dockRecyclerView.findViewHolderForAdapterPosition(index)?.itemView?.requestFocus()
+        }
+    }
+
     private fun enterIdleGalleryMode() {
-        if (isIdleGalleryMode || isContextMenuOpen || allAppsController.isVisible || settingsController.isVisible) return
+        if (isIdleGalleryMode || isContextMenuOpen || reorderingPackageName != null ||
+            allAppsController.isVisible || settingsController.isVisible
+        ) {
+            return
+        }
         isIdleGalleryMode = true
         shelfController.clearPendingFocus()
         hudContainer.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
@@ -681,7 +800,9 @@ class HomeActivity : AppCompatActivity() {
     private fun resetIdleTimer() {
         mainHandler.removeCallbacks(enterIdleRunnable)
         val idleSec = currentSettings.idleGallerySeconds
-        if (idleSec > 0 && !isContextMenuOpen && !allAppsController.isVisible && !settingsController.isVisible) {
+        if (idleSec > 0 && !isContextMenuOpen && reorderingPackageName == null &&
+            !allAppsController.isVisible && !settingsController.isVisible
+        ) {
             mainHandler.postDelayed(enterIdleRunnable, idleSec * 1_000L)
         }
     }
@@ -693,6 +814,11 @@ class HomeActivity : AppCompatActivity() {
     }
 
     private fun ensureValidFocus() {
+        val reordering = reorderingPackageName
+        if (reordering != null) {
+            focusDockPackage(reordering)
+            return
+        }
         FocusGuard.ensureHomeFocus(
             currentFocus = currentFocus,
             dockRecyclerView = dockRecyclerView,
