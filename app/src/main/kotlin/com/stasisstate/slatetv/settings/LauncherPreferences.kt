@@ -13,6 +13,7 @@ data class LauncherSettings(
     val backdropDimPercent: Int = 18,       // 0..60% subtle dim over photos
     val smartPortraitBlur: Boolean = true,
     val keepScreenOn: Boolean = false,      // Opt-in for dedicated digital photo frame mode (respects OLED/Shield sleep by default)
+    val disabledShelfPluginIds: Set<String> = emptySet(),
     val showSideloadedApps: Boolean = false,
 ) {
     val rotationIntervalLabel: String
@@ -50,6 +51,7 @@ class LauncherPreferences(context: Context) {
         backdropDimPercent = prefs.getInt(KEY_BACKDROP_DIM, 18).coerceIn(0, 60),
         smartPortraitBlur = prefs.getBoolean(KEY_SMART_PORTRAIT, true),
         keepScreenOn = prefs.getBoolean(KEY_KEEP_SCREEN_ON, false),
+        disabledShelfPluginIds = prefs.getStringSet("disabled_shelf_plugin_ids", emptySet()).orEmpty().toSet(),
         showSideloadedApps = prefs.getBoolean(KEY_SHOW_SIDELOADED, false),
     )
 
@@ -69,6 +71,7 @@ class LauncherPreferences(context: Context) {
             .putInt(KEY_BACKDROP_DIM, settings.backdropDimPercent.coerceIn(0, 60))
             .putBoolean(KEY_SMART_PORTRAIT, settings.smartPortraitBlur)
             .putBoolean(KEY_KEEP_SCREEN_ON, settings.keepScreenOn)
+            .putStringSet("disabled_shelf_plugin_ids", settings.disabledShelfPluginIds.toSet())
             .putBoolean(KEY_SHOW_SIDELOADED, settings.showSideloadedApps)
             .apply()
     }

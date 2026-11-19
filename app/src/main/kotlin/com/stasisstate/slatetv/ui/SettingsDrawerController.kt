@@ -1,7 +1,6 @@
 package com.stasisstate.slatetv.ui
 
 import android.app.ActivityManager
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
@@ -10,7 +9,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.stasisstate.slatetv.R
 import com.stasisstate.slatetv.apps.AppRepository
@@ -19,9 +17,10 @@ import com.stasisstate.slatetv.settings.LauncherPreferences
 import com.stasisstate.slatetv.settings.LauncherSettings
 import com.stasisstate.slatetv.wallpaper.WallpaperDiskCache
 import com.stasisstate.slatetv.wallpaper.plugins.PluginRegistry
-import com.stasisstate.slatetv.plugin.immich.ImmichBackgroundPlugin
+import com.stasisstate.slatetv.shelf.ShelfPluginRegistry
+import com.stasisstate.slatetv.shelf.launchPluginActivity
 
-class SettingsDrawerController(
+internal class SettingsDrawerController(
     private val context: Context,
     private val overlayView: View,
     private val itemsContainer: LinearLayout,
@@ -32,7 +31,7 @@ class SettingsDrawerController(
     private val dockPreferences: com.stasisstate.slatetv.apps.DockPreferences,
     private val diskCache: WallpaperDiskCache,
     private val onSettingsChanged: (newSettings: LauncherSettings, pluginChanged: Boolean, appsChanged: Boolean) -> Unit,
-    private val onOpenImmichSetup: () -> Unit,
+    private val shelfRegistry: ShelfPluginRegistry,
     private val onClearCache: () -> Unit,
     private val onTipSelected: (productId: String) -> Unit,
     private val onClosed: () -> Unit,
@@ -53,6 +52,7 @@ class SettingsDrawerController(
     fun open(lastSyncStatus: String) {
         lastStatus = lastSyncStatus
         pluginRegistry.refreshExternalPlugins()
+        shelfRegistry.refresh()
         rebuild(lastSyncStatus)
         overlayView.visibility = View.VISIBLE
         overlayView.alpha = 0f
@@ -104,31 +104,38 @@ class SettingsDrawerController(
             }
         }
 
-        // Plugin Configuration Shortcut
-        if (activePlugin.metadata.id == ImmichBackgroundPlugin.PLUGIN_ID) {
-            addRow(
-                title = "Configure Immich Plugin…",
-                subtitle = "Server URL, QR phone pairing, albums, quality",
-            ) {
-                onOpenImmichSetup()
+        val external = plugins.filter { it.metadata.isExternal }
+        if (external.isEmpty()) addSectionHeader("Install a Slate TV background plugin APK to add more providers.")
+        for (plugin in external) {
+            val metadata = plugin.metadata
+            val activity = metadata.settingsActivityClassName ?: continue
+            val packageName = metadata.packageName ?: continue
+            addRow("Configure ${metadata.name}", "Open plugin settings", "background-config:${metadata.id}") {
+                launchPluginActivity(context, packageName, activity)
             }
-        } else if (activePlugin.metadata.isExternal &&
-            !activePlugin.metadata.packageName.isNullOrBlank() &&
-            !activePlugin.metadata.settingsActivityClassName.isNullOrBlank()
-        ) {
-            addRow(
-                title = "Configure ${activePlugin.metadata.name}…",
-                subtitle = "Open external plugin settings",
-            ) {
-                val intent = Intent().apply {
-                    component = ComponentName(
-                        activePlugin.metadata.packageName!!,
-                        activePlugin.metadata.settingsActivityClassName!!,
-                    )
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+
+        addSectionHeader("HOME SHELVES (LIVE TV / GUIDES)")
+        if (shelfRegistry.plugins.isEmpty()) addSectionHeader("Install a Slate TV shelf plugin APK to add a home shelf.")
+        for (plugin in shelfRegistry.plugins) {
+            val metadata = plugin.metadata
+            val enabled = metadata.id !in settings.disabledShelfPluginIds
+            addRow(metadata.name, if (enabled) "Enabled" else "Disabled", "shelf:${metadata.id}") {
+                val updated = preferences.update {
+                    val disabled = it.disabledShelfPluginIds
+                    it.copy(disabledShelfPluginIds = if (enabled) disabled + metadata.id else disabled - metadata.id)
                 }
-                runCatching { context.startActivity(intent) }.onFailure {
-                    Toast.makeText(context, "Unable to open plugin settings", Toast.LENGTH_SHORT).show()
+                onSettingsChanged(updated, false, false)
+                rebuild(lastSyncStatus)
+            }
+            metadata.settingsActivityClassName?.let { activity ->
+                addRow("Configure ${metadata.name}", "Open plugin settings", "shelf-config:${metadata.id}") {
+                    launchPluginActivity(context, metadata.packageName, activity)
+                }
+            }
+            metadata.guideActivityClassName?.let { activity ->
+                addRow("Open Guide", metadata.name, "shelf-guide:${metadata.id}") {
+                    launchPluginActivity(context, metadata.packageName, activity)
                 }
             }
         }

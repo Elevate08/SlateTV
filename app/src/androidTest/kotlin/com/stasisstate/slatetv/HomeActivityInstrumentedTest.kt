@@ -1,14 +1,13 @@
 package com.stasisstate.slatetv
 
-import android.content.Intent
-import android.view.KeyEvent
 import android.view.View
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.stasisstate.slatetv.ui.HomeActivity
 import com.stasisstate.slatetv.plugin.api.PluginRequestContext
-import com.stasisstate.slatetv.plugin.immich.ImmichBackgroundPlugin
+import com.stasisstate.slatetv.wallpaper.plugins.AmbientSlatePlugin
+import com.stasisstate.slatetv.wallpaper.plugins.LocalFolderPlugin
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -51,6 +50,16 @@ class HomeActivityInstrumentedTest {
     }
 
     @Test
+    fun shelfLayoutStartsHidden() {
+        ActivityScenario.launch(HomeActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                val shelf = activity.layoutInflater.inflate(R.layout.home_shelf, null)
+                assertEquals(View.GONE, shelf.visibility)
+            }
+        }
+    }
+
+    @Test
     fun settingsDrawerAndAllAppsOpenAndCloseCleanly() {
         ActivityScenario.launch(HomeActivity::class.java).use { scenario ->
             Thread.sleep(400)
@@ -72,9 +81,10 @@ class HomeActivityInstrumentedTest {
     fun pluginRegistryDiscoversBuiltInAndExternalAidlPlugins() = runBlocking {
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as SlateApplication
         val external = app.pluginRegistry.refreshExternalPlugins()
-        val allIds = app.pluginRegistry.getAllPlugins().map { it.metadata.id }
+        val builtInIds = app.pluginRegistry.getAllPlugins()
+            .filterNot { it.metadata.isExternal }.map { it.metadata.id }.toSet()
 
-        assertTrue("Built-in Immich plugin must be registered", ImmichBackgroundPlugin.PLUGIN_ID in allIds)
+        assertEquals(setOf(AmbientSlatePlugin.PLUGIN_ID, LocalFolderPlugin.PLUGIN_ID), builtInIds)
         assertTrue("External sample plugin APK should be discovered", external.any { it.metadata.id == "external.sample.nordic" })
 
         val samplePlugin = app.pluginRegistry.getPluginById("external.sample.nordic")

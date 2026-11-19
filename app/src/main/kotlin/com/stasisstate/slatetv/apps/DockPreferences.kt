@@ -121,7 +121,6 @@ class DockPreferences(private val storage: DockStorage) {
 
         private val POPULAR_TV_PACKAGES = listOf(
             "com.plexapp.android",
-            "org.jellyfin.androidtv",
             "com.teamsmart.videomanager.tv", // SmartTube
             "com.google.android.youtube.tv",
             "com.netflix.ninja",

@@ -6,4 +6,6 @@
     <string name="settings">Settings</string>
     <string name="offline_badge">Offline</string>
     <string name="gallery_hint">Press any key to show dock</string>
+    <string name="next_shelf">Next shelf</string>
+    <string name="full_shelf_guide">Full Guide</string>
 </resources>

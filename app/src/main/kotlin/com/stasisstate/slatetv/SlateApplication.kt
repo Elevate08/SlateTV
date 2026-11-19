@@ -11,9 +11,6 @@ import com.stasisstate.slatetv.wallpaper.WallpaperManager
 import com.stasisstate.slatetv.wallpaper.plugins.AmbientSlatePlugin
 import com.stasisstate.slatetv.wallpaper.plugins.LocalFolderPlugin
 import com.stasisstate.slatetv.wallpaper.plugins.PluginRegistry
-import com.stasisstate.slatetv.plugin.immich.ImmichApiClient
-import com.stasisstate.slatetv.plugin.immich.ImmichBackgroundPlugin
-import com.stasisstate.slatetv.plugin.immich.SharedPrefsImmichConfigStore
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,12 +34,6 @@ class SlateApplication : Application() {
         private set
     lateinit var appRepository: AppRepository
         private set
-    lateinit var immichConfigStore: SharedPrefsImmichConfigStore
-        private set
-    lateinit var immichApiClient: ImmichApiClient
-        private set
-    lateinit var immichPlugin: ImmichBackgroundPlugin
-        private set
     lateinit var pluginRegistry: PluginRegistry
         private set
     lateinit var diskCache: WallpaperDiskCache
@@ -55,17 +46,13 @@ class SlateApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         // Share a single OkHttp connection/dispatcher pool across API & image loading
-        sharedHttpClient = ImmichApiClient.defaultClient(allowUntrustedTls = false)
+        sharedHttpClient = NetworkClientFactory.defaultClient(allowUntrustedTls = false)
         launcherPreferences = LauncherPreferences(this)
         dockPreferences = DockPreferences(this)
         appRepository = AppRepository(this)
-        immichConfigStore = SharedPrefsImmichConfigStore(this)
-        immichApiClient = ImmichApiClient(sharedHttpClient)
-        immichPlugin = ImmichBackgroundPlugin(immichConfigStore, immichApiClient)
 
         pluginRegistry = PluginRegistry(
             context = this,
-            immichPlugin = immichPlugin,
             ambientPlugin = AmbientSlatePlugin(),
             localPlugin = LocalFolderPlugin(this),
         ).apply {

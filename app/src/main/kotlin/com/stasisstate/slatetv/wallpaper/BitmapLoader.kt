@@ -12,8 +12,8 @@ import android.graphics.Shader
 import android.net.Uri
 import androidx.exifinterface.media.ExifInterface
 import com.stasisstate.slatetv.plugin.api.BackgroundMedia
-import com.stasisstate.slatetv.plugin.immich.ImmichApiClient
-import com.stasisstate.slatetv.plugin.immich.ImmichApiClient.Companion.executeCancellable
+import com.stasisstate.slatetv.NetworkClientFactory
+import com.stasisstate.slatetv.NetworkClientFactory.executeCancellable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -46,7 +46,7 @@ data class LoadedBackdrop(
 class BitmapLoader(
     private val context: Context,
     private val diskCache: WallpaperDiskCache,
-    private val baseHttp: OkHttpClient = ImmichApiClient.defaultClient(allowUntrustedTls = false),
+    private val baseHttp: OkHttpClient = NetworkClientFactory.defaultClient(allowUntrustedTls = false),
 ) {
     @Volatile
     private var cachedUntrustedHost: String? = null
@@ -59,7 +59,7 @@ class BitmapLoader(
         val normalizedHost = urlHost.lowercase()
         val existing = cachedUntrustedHttp
         if (existing != null && cachedUntrustedHost == normalizedHost) return existing
-        val created = ImmichApiClient.defaultClient(
+        val created = NetworkClientFactory.defaultClient(
             allowUntrustedTls = true,
             allowedHost = normalizedHost,
             baseClient = baseHttp,

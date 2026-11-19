@@ -39,7 +39,7 @@ class LauncherCoreUnitTest {
         val prefs = DockPreferences(InMemoryDockStorage())
         val installed = listOf(
             "com.example.random",
-            "org.jellyfin.androidtv",
+            "com.teamsmart.videomanager.tv",
             "com.plexapp.android",
             "com.google.android.youtube.tv",
             "com.example.fifth",
@@ -48,7 +48,7 @@ class LauncherCoreUnitTest {
         assertEquals(
             listOf(
                 "com.plexapp.android",
-                "org.jellyfin.androidtv",
+                "com.teamsmart.videomanager.tv",
                 "com.google.android.youtube.tv",
                 "com.example.random",
             ),
@@ -60,7 +60,7 @@ class LauncherCoreUnitTest {
             listOf(
                 "com.plexapp.android",
                 "com.google.android.youtube.tv",
-                "org.jellyfin.androidtv",
+                "com.teamsmart.videomanager.tv",
                 "com.example.random",
             ),
             prefs.getPinnedPackages(),
@@ -86,13 +86,13 @@ class LauncherCoreUnitTest {
             maxEntries = 3,
         )
 
-        val m1 = BackgroundMedia(id = "immich:1", imageUri = "http://x/1", subtitle = "Jan 2025")
-        val m2 = BackgroundMedia(id = "immich:2", imageUri = "http://x/2", subtitle = "Feb 2025")
-        val m3 = BackgroundMedia(id = "immich:3", imageUri = "http://x/3", subtitle = "Mar 2025")
-        val m4 = BackgroundMedia(id = "immich:4", imageUri = "http://x/4", subtitle = "Apr 2025")
+        val m1 = BackgroundMedia(id = "local:1", imageUri = "http://x/1", subtitle = "Jan 2025")
+        val m2 = BackgroundMedia(id = "local:2", imageUri = "http://x/2", subtitle = "Feb 2025")
+        val m3 = BackgroundMedia(id = "local:3", imageUri = "http://x/3", subtitle = "Mar 2025")
+        val m4 = BackgroundMedia(id = "local:4", imageUri = "http://x/4", subtitle = "Apr 2025")
 
         val e1 = cache.put(m1, ByteArray(100) { 1 })
-        cache.markLastShown("builtin.immich", e1)
+        cache.markLastShown("builtin.local", e1)
         Thread.sleep(15)
         cache.put(m2, ByteArray(100) { 2 })
         Thread.sleep(15)
@@ -101,19 +101,19 @@ class LauncherCoreUnitTest {
         cache.put(m4, ByteArray(100) { 4 })
 
         // e1 is protected because it is marked lastShown; m2 is evicted instead
-        assertNotNull(cache.get("immich:1"))
-        assertNull(cache.get("immich:2"))
-        assertEquals("Jan 2025", cache.getLastShown("builtin.immich")?.subtitle)
+        assertNotNull(cache.get("local:1"))
+        assertNull(cache.get("local:2"))
+        assertEquals("Jan 2025", cache.getLastShown("builtin.local")?.subtitle)
         assertNull(cache.getLastShown("builtin.local_folder"))
 
         // Streaming cap rejects oversized payloads cleanly
-        val tooBig = BackgroundMedia(id = "immich:huge", imageUri = "http://x/huge")
+        val tooBig = BackgroundMedia(id = "local:huge", imageUri = "http://x/huge")
         assertNull(cache.putStream(tooBig, ByteArray(500).inputStream(), maxBytesPerItem = 200))
-        assertNull(cache.get("immich:huge"))
+        assertNull(cache.get("local:huge"))
 
         // Removing corrupt entry deletes it
-        cache.remove("immich:4")
-        assertNull(cache.get("immich:4"))
+        cache.remove("local:4")
+        assertNull(cache.get("local:4"))
     }
 
     @Test
@@ -132,12 +132,12 @@ class LauncherCoreUnitTest {
 
     @Test
     fun `PluginRegistry resolves built-in plugins and falls back to Ambient Slate`() {
-        val fakeImmich = object : BackgroundPlugin {
-            override val metadata = PluginMetadata("builtin.immich", "Immich Photos", "desc", "1.0")
+        val fakeLocal = object : BackgroundPlugin {
+            override val metadata = PluginMetadata("builtin.local", "Local Photos", "desc", "1.0")
             override suspend fun fetchNext(request: PluginRequestContext): BackgroundMedia? = null
         }
-        val registry = PluginRegistry(context = null, immichPlugin = fakeImmich)
-        assertEquals("builtin.immich", registry.getPluginById("builtin.immich").metadata.id)
+        val registry = PluginRegistry(context = null, localPlugin = fakeLocal)
+        assertEquals("builtin.local", registry.getPluginById("builtin.local").metadata.id)
         assertEquals(AmbientSlatePlugin.PLUGIN_ID, registry.getPluginById("nonexistent.plugin").metadata.id)
     }
 

@@ -81,7 +81,6 @@ android {
 
 dependencies {
     implementation(project(":plugin-api"))
-    implementation(project(":plugin-immich"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)

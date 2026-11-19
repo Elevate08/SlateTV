@@ -34,7 +34,7 @@ data class WallpaperUiState(
  * 2. Network failures keep the current visible image intact (never clears to black).
  * 3. Generation counter prevents stale hydrations/fetches from overwriting newer plugin switches.
  * 4. Bounded backoff retry (3s -> 8s -> 20s -> 60s) recovers automatically when Shield DHCP/LAN
- *    or an Immich server comes back up, even when periodic rotation is set to Manual.
+ *    or a plugin server comes back up, even when periodic rotation is set to Manual.
  */
 class WallpaperManager(
     private val scope: CoroutineScope,

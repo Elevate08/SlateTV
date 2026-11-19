@@ -37,7 +37,9 @@ import com.stasisstate.slatetv.SlateApplication
 import com.stasisstate.slatetv.apps.AppInfo
 import com.stasisstate.slatetv.billing.TipJar
 import com.stasisstate.slatetv.settings.LauncherSettings
-import com.stasisstate.slatetv.plugin.immich.ImmichBackgroundPlugin
+import androidx.lifecycle.lifecycleScope
+import com.stasisstate.slatetv.shelf.ShelfManager
+import com.stasisstate.slatetv.shelf.ShelfPluginRegistry
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -66,6 +68,12 @@ class HomeActivity : AppCompatActivity() {
     private lateinit var btnNextPhoto: ImageButton
     private lateinit var btnSettings: ImageButton
 
+    private val shelfRegistry by lazy { ShelfPluginRegistry(this) }
+    private val shelfManager by lazy {
+        ShelfManager(lifecycleScope, shelfRegistry) { app.launcherPreferences.load().disabledShelfPluginIds }
+    }
+    private lateinit var shelfController: HomeShelfController
+    private var lastDockFocus: View? = null
     private lateinit var dockAdapter: AppDockAdapter
     private lateinit var allAppsController: AllAppsOverlayController
     private lateinit var settingsController: SettingsDrawerController
@@ -84,6 +92,7 @@ class HomeActivity : AppCompatActivity() {
     private val packageChangeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             app.pluginRegistry.refreshExternalPlugins()
+            shelfManager.refresh()
             reloadApps()
         }
     }
@@ -93,6 +102,7 @@ class HomeActivity : AppCompatActivity() {
             runOnUiThread {
                 offlineBadge.visibility = View.GONE
                 app.wallpaperManager.onNetworkRestored()
+                shelfManager.refresh()
             }
         }
 
@@ -101,6 +111,7 @@ class HomeActivity : AppCompatActivity() {
             runOnUiThread {
                 offlineBadge.visibility = View.GONE
                 app.wallpaperManager.onNetworkRestored()
+                shelfManager.refresh()
             }
         }
 
@@ -128,6 +139,14 @@ class HomeActivity : AppCompatActivity() {
         bindViews()
         setupTipJar()
         setupDock()
+        shelfController = HomeShelfController(findViewById(R.id.homeShelfContainer), lifecycleScope, app.sharedHttpClient)
+        lifecycleScope.launch {
+            shelfManager.shelves.collect { shelves ->
+                val hadFocus = shelfController.hasFocus()
+                shelfController.render(shelves)
+                if (hadFocus && !shelfController.hasFocus()) restoreDockFocus()
+            }
+        }
         setupActionPills()
         setupOverlays()
         registerBackHandler()
@@ -145,11 +164,22 @@ class HomeActivity : AppCompatActivity() {
         resetIdleTimer()
     }
 
+    override fun onStart() {
+        super.onStart()
+        shelfManager.start()
+    }
+
+    override fun onStop() {
+        shelfManager.stop()
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         exitIdleGalleryMode()
         backdropRenderer.ensureVisibleAfterWake()
         app.wallpaperManager.onResume()
+        shelfManager.refresh()
         updateOfflineIndicator()
         ensureValidFocus()
         resetIdleTimer()
@@ -220,7 +250,22 @@ class HomeActivity : AppCompatActivity() {
 
                 KeyEvent.KEYCODE_DPAD_UP -> {
                     if (event.repeatCount == 0 && !allAppsController.isVisible && !settingsController.isVisible) {
+                        if (!shelfController.hasFocus()) {
+                            lastDockFocus = currentFocus
+                            if (shelfController.requestFocus()) return true
+                        }
                         enterIdleGalleryMode()
+                        return true
+                    }
+                }
+
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                    if (shelfController.hasFocus() && shelfController.moveHorizontal(event.keyCode)) return true
+                }
+
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    if (shelfController.hasFocus() && !allAppsController.isVisible && !settingsController.isVisible) {
+                        restoreDockFocus()
                         return true
                     }
                 }
@@ -329,16 +374,17 @@ class HomeActivity : AppCompatActivity() {
             statusSummaryView = findViewById(R.id.settingsStatusSummary),
             preferences = app.launcherPreferences,
             pluginRegistry = app.pluginRegistry,
+            shelfRegistry = shelfRegistry,
             appRepository = app.appRepository,
             dockPreferences = app.dockPreferences,
             diskCache = app.diskCache,
             onSettingsChanged = { updated, pluginChanged, appsChanged ->
+                if (currentSettings.disabledShelfPluginIds != updated.disabledShelfPluginIds) shelfManager.refresh()
                 currentSettings = updated
                 applyUiPreferences(updated)
                 app.wallpaperManager.applySettings(updated, pluginChanged)
                 if (appsChanged) reloadApps()
             },
-            onOpenImmichSetup = { openImmichSetup() },
             onClearCache = {
                 app.diskCache.clear()
                 Toast.makeText(this, "Photo cache cleared", Toast.LENGTH_SHORT).show()
@@ -367,26 +413,6 @@ class HomeActivity : AppCompatActivity() {
                 }
             }
         }
-    }
-
-    private fun openImmichSetup() {
-        ImmichSetupDialog(
-            context = this,
-            configStore = app.immichConfigStore,
-            apiClient = app.immichApiClient,
-        ) { _ ->
-            app.appScope.launch {
-                app.immichPlugin.invalidateQueue()
-                val updated = app.launcherPreferences.update {
-                    it.copy(activePluginId = ImmichBackgroundPlugin.PLUGIN_ID)
-                }
-                currentSettings = updated
-                app.wallpaperManager.applySettings(updated, pluginChanged = true)
-                if (settingsController.isVisible) {
-                    settingsController.rebuild("Immich saved — syncing…")
-                }
-            }
-        }.show()
     }
 
     private fun observeWallpaperState() {
@@ -555,6 +581,11 @@ class HomeActivity : AppCompatActivity() {
         if (idleSec > 0 && !allAppsController.isVisible && !settingsController.isVisible) {
             mainHandler.postDelayed(enterIdleRunnable, idleSec * 1_000L)
         }
+    }
+
+    private fun restoreDockFocus() {
+        if (lastDockFocus?.takeIf { it.isAttachedToWindow && it.isShown }?.requestFocus() != true &&
+            dockRecyclerView.getChildAt(0)?.requestFocus() != true) btnAllApps.requestFocus()
     }
 
     private fun ensureValidFocus() {

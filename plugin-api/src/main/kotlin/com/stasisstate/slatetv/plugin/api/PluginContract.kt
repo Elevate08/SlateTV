@@ -11,6 +11,8 @@ object PluginContract {
     const val API_VERSION = 1
 
     /** Intent action that external plugin Services must declare in AndroidManifest.xml. */
+    const val ACTION_SHELF_PROVIDER = "com.stasisstate.slatetv.plugin.SHELF_PROVIDER"
+    const val META_GUIDE_ACTIVITY = "com.stasisstate.slatetv.plugin.GUIDE_ACTIVITY"
     const val ACTION_BACKGROUND_PROVIDER = "com.stasisstate.slatetv.plugin.BACKGROUND_PROVIDER"
 
     /** Optional manifest meta-data keys on the plugin Service. */

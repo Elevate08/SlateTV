@@ -7,20 +7,17 @@ import android.content.pm.PackageManager
 import com.stasisstate.slatetv.plugin.api.BackgroundPlugin
 import com.stasisstate.slatetv.plugin.api.PluginContract
 import com.stasisstate.slatetv.plugin.api.PluginMetadata
-import com.stasisstate.slatetv.plugin.immich.ImmichBackgroundPlugin
 
 /**
- * Unified registry of built-in plugins (Immich, Ambient Slate, Local Photos)
+ * Unified registry of built-in plugins (Ambient Slate, Local Photos)
  * and dynamically discovered external AIDL APK plugins.
  */
 class PluginRegistry(
     private val context: Context?,
-    val immichPlugin: BackgroundPlugin,
     val ambientPlugin: BackgroundPlugin = AmbientSlatePlugin(),
     private val localPlugin: BackgroundPlugin? = null,
 ) {
     private val builtInPlugins: List<BackgroundPlugin> = listOfNotNull(
-        immichPlugin,
         ambientPlugin,
         localPlugin,
     )
@@ -82,5 +79,4 @@ class PluginRegistry(
         return getAllPlugins().firstOrNull { it.metadata.id == id } ?: ambientPlugin
     }
 
-    fun isImmichPlugin(id: String): Boolean = id == ImmichBackgroundPlugin.PLUGIN_ID
 }
