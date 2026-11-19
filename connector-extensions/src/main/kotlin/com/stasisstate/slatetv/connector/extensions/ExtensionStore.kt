@@ -176,6 +176,12 @@ internal class ExtensionStore(private val values: KeyValueStore, private val vau
         require(apiKey == null || AuthHeader.validKey(apiKey)) { "Invalid API key" }
         val current = list().filterNot { it.id == extension.id }
         require(current.size < MAX_EXTENSIONS) { "Too many extensions installed" }
+        // A stored key belongs to the origin it was saved for. Never let a manifest from another
+        // origin inherit it by reusing an installed extension's id.
+        val previous = list().firstOrNull { it.id == extension.id }
+        if (apiKey == null && previous != null && !sameManifestOrigin(previous.manifest, extension.manifest)) {
+            vault.remove(extension.id)
+        }
         if (apiKey != null) vault.put(extension.id, apiKey)
         save(current + extension.copy(hasApiKey = false))
     }
@@ -204,6 +210,12 @@ internal class ExtensionStore(private val values: KeyValueStore, private val vau
     }
 
     fun apiKey(id: String): String? = vault.get(id)
+
+    private fun sameManifestOrigin(a: ExtensionManifest, b: ExtensionManifest): Boolean {
+        val ua = ExtensionUrlPolicy.parseHttpUrl(a.manifestUrl) ?: return false
+        val ub = ExtensionUrlPolicy.parseHttpUrl(b.manifestUrl) ?: return false
+        return ExtensionUrlPolicy.sameOrigin(ua, ub)
+    }
 
     private fun save(extensions: List<InstalledExtension>) {
         check(values.putString(LIST_KEY, ExtensionStoreCodec.encode(extensions)))

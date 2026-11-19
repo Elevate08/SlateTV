@@ -4,20 +4,14 @@ import com.stasisstate.slatetv.plugin.api.ShelfCard
 import com.stasisstate.slatetv.plugin.api.ShelfData
 import org.json.JSONArray
 import org.json.JSONObject
-import org.json.JSONTokener
 
-private fun parseJson(body: String): Any = try {
-    JSONTokener(body.trim()).nextValue()
-} catch (e: Exception) {
-    throw ExtensionException("The server did not return valid JSON")
-}
 
 /** `{"items":[...]}` or a bare array of items / URL strings. */
 internal object BackgroundFeedParser {
     const val MAX_ITEMS = 200
 
     fun parse(body: String): List<FeedItem> {
-        val array = when (val root = parseJson(body)) {
+        val array = when (val root = parseUntrustedJson(body)) {
             is JSONArray -> root
             is JSONObject -> root.opt("items") as? JSONArray ?: throw ExtensionException("Feed has no items array")
             else -> throw ExtensionException("Unexpected feed format")
@@ -57,7 +51,7 @@ internal object ShelfFeedParser {
     const val MAX_CARDS = 24
 
     fun parse(body: String, fallbackTitle: String): ShelfData {
-        val root = parseJson(body) as? JSONObject ?: throw ExtensionException("Unexpected shelf format")
+        val root = parseUntrustedJson(body) as? JSONObject ?: throw ExtensionException("Unexpected shelf format")
         val array = root.opt("items") as? JSONArray ?: JSONArray()
         val cards = ArrayList<ShelfCard>()
         val seen = HashSet<String>()

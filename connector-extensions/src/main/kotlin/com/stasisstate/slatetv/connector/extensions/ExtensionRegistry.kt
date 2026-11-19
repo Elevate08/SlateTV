@@ -11,8 +11,9 @@ import com.stasisstate.slatetv.plugin.api.ShelfPlugin
 class ExtensionRegistry internal constructor(
     private val store: ExtensionStore,
     private val client: ExtensionClient,
+    private val hostPackageName: String,
 ) {
-    constructor(context: Context) : this(ExtensionStore.create(context), ExtensionClient())
+    constructor(context: Context) : this(ExtensionStore.create(context), ExtensionClient(), context.applicationContext.packageName)
 
     private val backgrounds = HashMap<String, Pair<InstalledExtension, BackgroundPlugin>>()
     private val shelves = HashMap<String, Pair<InstalledExtension, ShelfPlugin>>()
@@ -38,7 +39,7 @@ class ExtensionRegistry internal constructor(
         return wanted.map { ext ->
             val cached = shelves[ext.id]
             if (cached != null && cached.first == ext) cached.second else {
-                ExtensionShelfPlugin(ext, client, { store.apiKey(ext.id) }).also { shelves[ext.id] = ext to it }
+                ExtensionShelfPlugin(ext, client, { store.apiKey(ext.id) }, hostPackageName).also { shelves[ext.id] = ext to it }
             }
         }
     }

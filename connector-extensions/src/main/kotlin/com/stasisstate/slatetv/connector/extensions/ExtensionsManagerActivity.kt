@@ -139,6 +139,12 @@ class ExtensionsManagerActivity : AppCompatActivity() {
         focusTarget?.requestFocus()
     }
 
+    private fun sameOrigin(a: ExtensionManifest, b: ExtensionManifest): Boolean {
+        val ua = ExtensionUrlPolicy.parseHttpUrl(a.manifestUrl) ?: return false
+        val ub = ExtensionUrlPolicy.parseHttpUrl(b.manifestUrl) ?: return false
+        return ExtensionUrlPolicy.sameOrigin(ua, ub)
+    }
+
     private fun setStatus(message: String, color: Int = Ui.OK) {
         statusView.text = message
         statusView.setTextColor(color)
@@ -215,7 +221,13 @@ class ExtensionsManagerActivity : AppCompatActivity() {
             addView(detail("Host", manifestUrl?.let { ExtensionUrlPolicy.originOf(it).substringAfter("://") } ?: "unknown"))
             addView(detail("Type", typeLabel(manifest.type)))
             addView(detail("Connection", if (secure) "HTTPS (encrypted)" else "HTTP (unencrypted, local network only)", if (secure) Ui.OK else Ui.WARN))
-            addView(detail("API key", if (apiKey != null) "Provided, stored encrypted" else "None"))
+            val keyNote = when {
+                apiKey != null -> "Provided, stored encrypted"
+                existing?.hasApiKey == true && sameOrigin(existing.manifest, manifest) -> "Existing key kept"
+                existing?.hasApiKey == true -> "Existing key will be removed (different host)"
+                else -> "None"
+            }
+            addView(detail("API key", keyNote, if (keyNote.startsWith("Existing key will")) Ui.WARN else Ui.TEXT))
             if (manifest.description.isNotEmpty()) addView(detail("About", manifest.description))
             if (existing != null) addView(text("An extension with this ID is already installed and will be replaced.", 16f, Ui.WARN).apply {
                 setPadding(0, dp(8), 0, 0)
@@ -311,7 +323,7 @@ class ExtensionsManagerActivity : AppCompatActivity() {
         }
         body.addView(result)
         dialog = tvDialog(ext.name, body, "Close" to { dialog.dismiss() })
-        dialog.setOnDismissListener { testJob?.cancel(); activeDialog = null }
+        dialog.setOnDismissListener { testJob?.cancel(); if (activeDialog === dialog) activeDialog = null }
     }
 
     private fun confirmRemove(ext: InstalledExtension) {
@@ -384,7 +396,7 @@ class ExtensionsManagerActivity : AppCompatActivity() {
             server.close()
             if (pairing === server) pairing = null
             if (pairingDialog === dialog) pairingDialog = null
-            activeDialog = null
+            if (activeDialog === dialog) activeDialog = null
         }
     }
 

@@ -91,6 +91,19 @@ class ManifestParserTest {
         rejected("42")
     }
 
+    @Test fun deeplyNestedJsonRejectedBeforeParsing() {
+        val deep = "[".repeat(MAX_JSON_DEPTH + 1) + "]".repeat(MAX_JSON_DEPTH + 1)
+        assertTrue(rejected(deep).contains("nested"))
+        assertTrue(rejected("{\"a\":".repeat(MAX_JSON_DEPTH + 1) + "1" + "}".repeat(MAX_JSON_DEPTH + 1)).contains("nested"))
+        assertTrue(runCatching { BackgroundFeedParser.parse("[".repeat(100_000)) }.exceptionOrNull() is ExtensionException)
+        assertTrue(runCatching { ShelfFeedParser.parse("{\"items\":" + "[".repeat(100_000), "f") }.exceptionOrNull() is ExtensionException)
+        // Brackets inside strings do not count toward depth.
+        val inString = "[{\"url\":\"https://a.example/x.jpg\",\"title\":\"" + "[".repeat(500) + "\\\"[\"}]"
+        assertEquals(1, BackgroundFeedParser.parse(inString).size)
+        // Nesting exactly at the cap is fine.
+        assertEquals(0, BackgroundFeedParser.parse("[".repeat(MAX_JSON_DEPTH) + "]".repeat(MAX_JSON_DEPTH)).size)
+    }
+
     @Test fun autoWrapsItemsObjectFeed() {
         val url = "https://photos.example.org/feed.json".toHttpUrl()
         val m = ManifestParser.parse("""{"items":[{"imageUrl":"https://photos.example.org/a.jpg"}]}""", url)

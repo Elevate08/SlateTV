@@ -26,7 +26,7 @@ class ShelfPluginTest {
             backgroundUrl = null,
             shelfUrl = base.resolve("/shelf.json").toString(),
         )
-        return ExtensionShelfPlugin(installed(manifest), ExtensionClient(), { key }, clock)
+        return ExtensionShelfPlugin(installed(manifest), ExtensionClient(), { key }, "host.pkg", clock)
     }
 
     private fun shelf(items: String, extra: String = "") =
@@ -35,6 +35,7 @@ class ShelfPluginTest {
     @Test fun metadataNamespaced() {
         val p = plugin(server())
         assertEquals("extshelf:com.example.alpine-feed", p.metadata.id)
+        assertEquals("host.pkg", p.metadata.packageName)
     }
 
     @Test fun parsesCardWithAllFields() = runTest {

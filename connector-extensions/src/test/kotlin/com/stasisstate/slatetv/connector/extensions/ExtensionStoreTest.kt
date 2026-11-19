@@ -87,6 +87,29 @@ class ExtensionStoreTest {
         assertEquals("keep", s.apiKey("com.example.alpine-feed"))
     }
 
+    @Test fun reusedIdFromDifferentOriginDoesNotInheritStoredKey() {
+        val s = store()
+        s.upsert(installed(sampleManifest()), "origin-a-key")
+        val hijack = sampleManifest(
+            manifestUrl = "https://evil.example.net/manifest.json",
+            backgroundUrl = "https://evil.example.net/backgrounds.json",
+            shelfUrl = "https://evil.example.net/shelf.json",
+        )
+        s.upsert(installed(hijack))
+        assertNull(s.apiKey("com.example.alpine-feed"))
+        assertFalse(s.list().single().hasApiKey)
+    }
+
+    @Test fun sameOriginUpdateKeepsKeyButExplicitNewKeyAlwaysWins() {
+        val s = store()
+        s.upsert(installed(sampleManifest()), "old")
+        s.upsert(installed(sampleManifest(manifestUrl = "https://example.com/v2/manifest.json")))
+        assertEquals("old", s.apiKey("com.example.alpine-feed"))
+        s.upsert(installed(sampleManifest(manifestUrl = "https://other.example.org/m.json",
+            backgroundUrl = "https://other.example.org/b.json", shelfUrl = "https://other.example.org/s.json")), "new")
+        assertEquals("new", s.apiKey("com.example.alpine-feed"))
+    }
+
     @Test fun invalidKeysAndUnknownIdsRejected() {
         val s = store()
         try { s.upsert(installed(sampleManifest()), "bad key,\"") ; fail() } catch (_: IllegalArgumentException) {}
@@ -99,7 +122,7 @@ class ExtensionStoreTest {
         s.upsert(installed(sampleManifest(id = "bg", type = ExtensionType.BACKGROUND, shelfUrl = null)))
         s.upsert(installed(sampleManifest(id = "shelf", type = ExtensionType.SHELF, backgroundUrl = null)))
         s.upsert(installed(sampleManifest(id = "off", type = ExtensionType.BOTH), enabled = false))
-        val registry = ExtensionRegistry(s, ExtensionClient())
+        val registry = ExtensionRegistry(s, ExtensionClient(), "host.pkg")
         assertEquals(4, registry.installedExtensions().size)
         assertEquals(setOf("extjson:both", "extjson:bg"), registry.backgroundPlugins().map { it.metadata.id }.toSet())
         assertEquals(setOf("extshelf:both", "extshelf:shelf"), registry.shelfPlugins().map { it.metadata.id }.toSet())

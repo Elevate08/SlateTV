@@ -3,7 +3,6 @@ package com.stasisstate.slatetv.connector.extensions
 import okhttp3.HttpUrl
 import org.json.JSONArray
 import org.json.JSONObject
-import org.json.JSONTokener
 
 /** Parses and validates Open JSON Extension Protocol v1 manifests, plus bare photo feeds. */
 internal object ManifestParser {
@@ -18,11 +17,7 @@ internal object ManifestParser {
 
     /** [sourceUrl] is the URL the user supplied (not the post-redirect URL). */
     fun parse(body: String, sourceUrl: HttpUrl): ExtensionManifest {
-        val value = try {
-            JSONTokener(body.trim()).nextValue()
-        } catch (e: Exception) {
-            throw ExtensionException("The URL did not return valid JSON")
-        }
+        val value = parseUntrustedJson(body)
         return when {
             value is JSONArray -> wrapSimpleFeed(value, sourceUrl)
             value is JSONObject && value.has("schemaVersion") -> parseV1(value, sourceUrl)

@@ -113,6 +113,18 @@ class BackgroundPluginTest {
         assertEquals("a", p.fetchNext(ctx)!!.id)
     }
 
+    @Test fun emptyFeedIsRetriedAfterShortBackoffNotFullInterval() = runTest {
+        val s = server()
+        s.enqueue(json("""{"items":[]}"""))
+        s.enqueue(json(feed("a")))
+        val p = plugin(s, refresh = 86_400)
+        assertNull(p.fetchNext(ctx))
+        assertNull(p.fetchNext(ctx)) // within backoff, no extra request
+        assertEquals(1, s.requestCount)
+        clock.now += 31_000
+        assertEquals("a", p.fetchNext(ctx)!!.id)
+    }
+
     @Test fun emptyOrInvalidFeedYieldsNull() = runTest {
         val s = server()
         s.enqueue(json("""{"items":[]}"""))

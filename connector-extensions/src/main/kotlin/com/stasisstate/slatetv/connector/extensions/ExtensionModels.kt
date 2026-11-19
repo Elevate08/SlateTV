@@ -51,6 +51,34 @@ data class InstalledExtension(
 internal class ExtensionException(message: String, val status: Int = 0, cause: Throwable? = null) :
     IOException(message, cause)
 
+/** Parses untrusted JSON, rejecting pathological nesting before the recursive parser sees it. */
+internal fun parseUntrustedJson(body: String): Any {
+    val text = body.trim()
+    var depth = 0
+    var inString = false
+    var escaped = false
+    for (c in text) {
+        if (inString) {
+            when {
+                escaped -> escaped = false
+                c == '\\' -> escaped = true
+                c == '"' -> inString = false
+            }
+        } else when (c) {
+            '"' -> inString = true
+            '[', '{' -> if (++depth > MAX_JSON_DEPTH) throw ExtensionException("The response is nested too deeply")
+            ']', '}' -> if (depth > 0) depth--
+        }
+    }
+    return try {
+        org.json.JSONTokener(text).nextValue()
+    } catch (e: Exception) {
+        throw ExtensionException("The server did not return valid JSON")
+    }
+}
+
+internal const val MAX_JSON_DEPTH = 32
+
 internal data class FeedItem(
     val id: String,
     val imageUrl: String,

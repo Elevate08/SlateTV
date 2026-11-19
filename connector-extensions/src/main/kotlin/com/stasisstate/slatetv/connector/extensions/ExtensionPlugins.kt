@@ -74,7 +74,8 @@ internal class ExtensionBackgroundPlugin(
             try {
                 val fresh = withContext(Dispatchers.IO) { client.fetchBackground(manifest, apiKey()) }
                 cache = fresh
-                expiresAt = now + manifest.refreshIntervalSeconds * 1000L
+                // An empty feed is re-checked after a short delay so an upstream fix shows up quickly.
+                expiresAt = now + if (fresh.isEmpty()) RETRY_BACKOFF_MS else manifest.refreshIntervalSeconds * 1000L
                 retryAt = 0L
                 return fresh
             } catch (e: CancellationException) {
@@ -109,6 +110,7 @@ internal class ExtensionShelfPlugin(
     private val extension: InstalledExtension,
     private val client: ExtensionClient,
     private val apiKey: () -> String?,
+    hostPackageName: String = PACKAGE,
     private val clock: () -> Long = System::currentTimeMillis,
 ) : ShelfPlugin {
     private val manifest = extension.manifest
@@ -121,7 +123,7 @@ internal class ExtensionShelfPlugin(
         name = manifest.name,
         description = manifest.description,
         version = manifest.version,
-        packageName = PACKAGE,
+        packageName = hostPackageName,
     )
 
     override suspend fun fetchShelf(): ShelfData? = mutex.withLock {
