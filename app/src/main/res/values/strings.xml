@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Slate TV</string>
+    <string name="all_apps">Apps</string>
+    <string name="next_photo">Next</string>
+    <string name="settings">Settings</string>
+    <string name="offline_badge">Offline</string>
+    <string name="gallery_hint">Press any key to show dock</string>
+</resources>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="slate_bg">#0A0D12</color>
+    <color name="slate_surface">#E6111620</color>
+    <color name="slate_card">#CC18202E</color>
+    <color name="slate_card_focused">#F2243044</color>
+    <color name="slate_text_primary">#F8FAFC</color>
+    <color name="slate_text_secondary">#B8C4D4</color>
+    <color name="slate_text_muted">#7E8CA0</color>
+    <color name="slate_accent">#E2E8F0</color>
+    <color name="slate_accent_green">#4ADE80</color>
+    <color name="slate_accent_amber">#FBBF24</color>
+    <color name="slate_accent_red">#F87171</color>
+    <color name="slate_divider">#26FFFFFF</color>
+</resources>

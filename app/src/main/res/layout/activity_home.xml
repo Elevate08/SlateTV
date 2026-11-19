@@ -1,0 +1,320 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/rootContainer"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/slate_bg"
+    android:clipChildren="false"
+    android:clipToPadding="false">
+
+    <!-- Isolated backdrop container so crossfade bringToFront() NEVER covers HUD or overlays -->
+    <FrameLayout
+        android:id="@+id/backdropContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <!-- Double-buffered full-bleed backdrop (always non-black, zero SurfaceView) -->
+        <ImageView
+            android:id="@+id/backdropLayerA"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="@null"
+            android:scaleType="centerCrop" />
+
+        <ImageView
+            android:id="@+id/backdropLayerB"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:alpha="0"
+            android:contentDescription="@null"
+            android:scaleType="centerCrop" />
+
+        <!-- Foreground layer used only for Smart Portrait Blur Pillarbox -->
+        <ImageView
+            android:id="@+id/portraitForeground"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:alpha="0"
+            android:contentDescription="@null"
+            android:scaleType="fitCenter"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <!-- Configurable gentle dimming scrim for high-contrast legibility -->
+    <View
+        android:id="@+id/backdropDimView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:alpha="0.18" />
+
+    <!-- Subtle top/bottom vignette so dock & clock pop cleanly over bright photos -->
+    <View
+        android:id="@+id/homeVignette"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/scrim_home_vignette" />
+
+    <!-- Main HUD Chrome (fades smoothly during Idle Gallery Mode) -->
+    <FrameLayout
+        android:id="@+id/hudContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        android:paddingStart="48dp"
+        android:paddingTop="32dp"
+        android:paddingEnd="48dp"
+        android:paddingBottom="28dp">
+
+        <!-- Top Bar: Quiet Photo Caption (left) + Clock & Offline Badge (right) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/photoCaptionText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:letterSpacing="0.02"
+                android:maxLines="1"
+                android:shadowColor="#B3000000"
+                android:shadowDy="1"
+                android:shadowRadius="6"
+                android:textColor="#D9F8FAFC"
+                android:textSize="14sp"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/offlineBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="14dp"
+                android:background="#803B1219"
+                android:paddingStart="10dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="10dp"
+                android:paddingBottom="4dp"
+                android:text="@string/offline_badge"
+                android:textColor="#FCA5A5"
+                android:textSize="12sp"
+                android:visibility="gone" />
+
+            <TextClock
+                android:id="@+id/homeClock"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="sans-serif-light"
+                android:letterSpacing="0.03"
+                android:shadowColor="#CC000000"
+                android:shadowDy="2"
+                android:shadowRadius="8"
+                android:textColor="@color/slate_text_primary"
+                android:textSize="32sp" />
+        </LinearLayout>
+
+        <!-- Bottom Dock Bar: Pinned Apps Row + Minimal Action Pills -->
+        <LinearLayout
+            android:id="@+id/dockContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/dockRecyclerView"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:clipChildren="false"
+                    android:clipToPadding="false"
+                    android:paddingTop="10dp"
+                    android:paddingBottom="8dp" />
+
+                <!-- Compact Action Pills on the Right -->
+                <LinearLayout
+                    android:id="@+id/actionPillsContainer"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="16dp"
+                    android:clipChildren="false"
+                    android:clipToPadding="false"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <ImageButton
+                        android:id="@+id/btnAllApps"
+                        android:layout_width="46dp"
+                        android:layout_height="46dp"
+                        android:layout_marginEnd="10dp"
+                        android:background="@drawable/bg_action_pill"
+                        android:contentDescription="@string/all_apps"
+                        android:focusable="true"
+                        android:focusableInTouchMode="true"
+                        android:padding="11dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_apps_grid" />
+
+                    <ImageButton
+                        android:id="@+id/btnNextPhoto"
+                        android:layout_width="46dp"
+                        android:layout_height="46dp"
+                        android:layout_marginEnd="10dp"
+                        android:background="@drawable/bg_action_pill"
+                        android:contentDescription="@string/next_photo"
+                        android:focusable="true"
+                        android:focusableInTouchMode="true"
+                        android:padding="11dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_next_photo" />
+
+                    <ImageButton
+                        android:id="@+id/btnSettings"
+                        android:layout_width="46dp"
+                        android:layout_height="46dp"
+                        android:background="@drawable/bg_action_pill"
+                        android:contentDescription="@string/settings"
+                        android:focusable="true"
+                        android:focusableInTouchMode="true"
+                        android:padding="11dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_settings_gear" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Focused App / Action Hint Subtitle -->
+            <TextView
+                android:id="@+id/focusedLabelText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:layout_marginTop="2dp"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:shadowColor="#CC000000"
+                android:shadowDy="1"
+                android:shadowRadius="6"
+                android:textColor="#E6F8FAFC"
+                android:textSize="14sp" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- All Apps Overlay (shown instantly in-place, zero Activity transition flicker) -->
+    <LinearLayout
+        android:id="@+id/allAppsOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#E8090C11"
+        android:clickable="true"
+        android:focusable="false"
+        android:orientation="vertical"
+        android:paddingStart="52dp"
+        android:paddingTop="36dp"
+        android:paddingEnd="52dp"
+        android:paddingBottom="32dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingBottom="18dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="All Apps"
+                android:textColor="@color/slate_text_primary"
+                android:textSize="26sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Hold OK to pin or hide · Back to close"
+                android:textColor="@color/slate_text_muted"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/allAppsRecyclerView"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:padding="8dp" />
+    </LinearLayout>
+
+    <!-- Right-Side Translucent Settings Drawer -->
+    <FrameLayout
+        android:id="@+id/settingsOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#8805070A"
+        android:clickable="true"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:id="@+id/settingsDrawerPanel"
+            android:layout_width="440dp"
+            android:layout_height="match_parent"
+            android:layout_gravity="end"
+            android:background="#F50D121B"
+            android:orientation="vertical"
+            android:paddingStart="28dp"
+            android:paddingTop="34dp"
+            android:paddingEnd="32dp"
+            android:paddingBottom="28dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Slate TV Settings"
+                android:textColor="@color/slate_text_primary"
+                android:textSize="24sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/settingsStatusSummary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:layout_marginBottom="16dp"
+                android:textColor="@color/slate_text_muted"
+                android:textSize="13sp" />
+
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:fadeScrollbars="false">
+
+                <LinearLayout
+                    android:id="@+id/settingsItemsContainer"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingBottom="24dp" />
+            </ScrollView>
+        </LinearLayout>
+    </FrameLayout>
+
+</FrameLayout>

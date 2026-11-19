@@ -1,0 +1,4 @@
+-keep class dev.slatetv.plugin.api.** { *; }
+-dontwarn org.conscrypt.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.openjsse.**

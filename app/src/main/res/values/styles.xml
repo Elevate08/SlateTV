@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Opaque windowBackground ensures the very first frame drawn by WindowManager
+        is our calm slate tone (#0A0D12), never an uninitialized black surface.
+    -->
+    <style name="Theme.SlateTV" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/slate_bg</item>
+        <item name="android:colorBackground">@color/slate_bg</item>
+        <item name="android:windowShowWallpaper">false</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="colorPrimary">@color/slate_accent</item>
+        <item name="colorAccent">@color/slate_accent</item>
+    </style>
+
+    <style name="Theme.SlateTV.Dialog" parent="Theme.AppCompat.Dialog">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsFloating">true</item>
+        <item name="android:backgroundDimAmount">0.72</item>
+        <item name="windowNoTitle">true</item>
+    </style>
+</resources>
