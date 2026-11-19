@@ -10,12 +10,75 @@ import android.os.Process
 import android.os.SystemClock
 import com.stasisstate.slatetv.plugin.api.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.security.MessageDigest
 import java.time.Instant
 
 internal const val JELLYFIN_TV = "org.jellyfin.androidtv"
 internal const val CHANNEL_ID = "channel_id"
 private const val SLATE_PACKAGE = "com.stasisstate.slatetv"
+
+internal const val SUCCESS_FRESH_MS = 45_000L
+internal const val FAILURE_FRESH_MS = 3_000L
+internal const val PARTIAL_LOGO_FRESH_MS = 10_000L
+internal const val LOGO_FETCH_PERMITS = 4
+internal const val LOGO_FETCH_TIMEOUT_MS = 2_000L
+
+internal fun shelfFreshTtlMs(available: Boolean, hasMissingLogos: Boolean): Long = when {
+    !available -> FAILURE_FRESH_MS
+    hasMissingLogos -> PARTIAL_LOGO_FRESH_MS
+    else -> SUCCESS_FRESH_MS
+}
+
+/** Hash of server, user and API key; never contains or reveals the raw secret. */
+internal fun logoNamespace(config: JellyfinConfig, userId: String): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+        .digest("${config.serverUrl}\u0000$userId\u0000${config.apiKey}".toByteArray())
+    return digest.take(16).joinToString("") { "%02x".format(it) }
+}
+
+internal class LogoProxyResult(val logos: Map<String, String?>, val hasMissingLogos: Boolean)
+
+/**
+ * Proxies logos with at most [semaphore] concurrent fetches. The per-item [timeoutMs] starts only
+ * after a permit is acquired, so queued items still get their full budget once admitted.
+ */
+internal suspend fun <T> proxyLogos(
+    channels: List<T>,
+    idOf: (T) -> String,
+    rawUrlOf: (T) -> String?,
+    semaphore: Semaphore,
+    timeoutMs: Long = LOGO_FETCH_TIMEOUT_MS,
+    fetch: suspend (T, String) -> String?,
+): LogoProxyResult {
+    val results = coroutineScope {
+        channels.map { channel ->
+            async(Dispatchers.IO) {
+                val rawUrl = rawUrlOf(channel)?.takeIf { it.length <= 2048 }
+                    ?: return@async Triple(idOf(channel), null, rawUrlOf(channel) != null)
+                val uri = semaphore.withPermit {
+                    withTimeoutOrNull(timeoutMs) {
+                        try {
+                            fetch(channel, rawUrl)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }
+                }
+                Triple(idOf(channel), uri, uri == null)
+            }
+        }.awaitAll()
+    }
+    return LogoProxyResult(
+        logos = results.associate { it.first to it.second },
+        hasMissingLogos = results.any { it.third },
+    )
+}
+
+internal class ShelfFetch(val payload: ShelfPayload, val hasMissingLogos: Boolean = false)
 
 class JellyfinShelfPluginService : Service() {
     private val logoCache by lazy { JellyfinLogoCache(applicationContext) }
@@ -63,31 +126,30 @@ class JellyfinShelfPluginService : Service() {
     private suspend fun shelf(): ShelfPayload? {
         val config = JellyfinConfigStore(applicationContext).load()
         if (config.serverUrl.isBlank() || config.apiKey.isBlank()) return unavailable("Configure Jellyfin first.")
-        return shelfCache.get(config, ::fetchShelf)
+        return shelfCache.getFetch(config, ::fetchShelf)
     }
 
-    private suspend fun fetchShelf(config: JellyfinConfig): ShelfPayload {
+    private suspend fun fetchShelf(config: JellyfinConfig): ShelfFetch {
         val api = JellyfinApiClient(config)
-        if (!api.liveTvEnabled()) return unavailable("Live TV is unavailable on this server.")
+        if (!api.liveTvEnabled()) return ShelfFetch(unavailable("Live TV is unavailable on this server."))
         val user = config.userId.ifBlank { api.detectUserId() }
         val channels = api.channels(user, config.maxHomeChannels.coerceIn(1, 24), config.favoritesOnly)
-        if (channels.isEmpty()) return unavailable("No Live TV channels found.")
+        if (channels.isEmpty()) return ShelfFetch(unavailable("No Live TV channels found."))
         val now = Instant.now()
         val inGuide = config.cardTapAction == CardTapAction.OPEN_GUIDE
 
         // Proxy logos through JellyfinMediaProvider so Jellyfin tokens never leave this plugin
         // and self-signed LAN HTTPS channel icons load cleanly in Slate TV.
-        val proxiedLogos = coroutineScope {
-            channels.map { channel ->
-                async(Dispatchers.IO) {
-                    val rawUrl = channel.imageUri?.takeIf { it.length <= 2048 } ?: return@async channel.id to null
-                    val contentUri = withTimeoutOrNull(2_000L) {
-                        logoCache.publish(api, rawUrl, channel.imageTag, SLATE_PACKAGE)?.toString()
-                    }
-                    channel.id to contentUri
-                }
-            }.awaitAll().toMap()
+        val namespace = logoNamespace(config, user)
+        val proxied = proxyLogos(
+            channels = channels,
+            idOf = { it.id },
+            rawUrlOf = { it.imageUri },
+            semaphore = logoSemaphore,
+        ) { channel, rawUrl ->
+            logoCache.publish(api, rawUrl, channel.imageTag, SLATE_PACKAGE, namespace)?.toString()
         }
+        val proxiedLogos = proxied.logos
 
         val items = channels.map { channel ->
             val program = channel.current
@@ -108,12 +170,16 @@ class JellyfinShelfPluginService : Service() {
                 launchExtras = Bundle().apply { if (inGuide) putString(CHANNEL_ID, channel.id.take(2048)) },
             )
         }.distinctBy(ShelfItem::id)
-        return ShelfPayload(true, "Live TV · On Now", items, guideActivityClassName = JellyfinGuideActivity::class.java.name)
+        return ShelfFetch(
+            ShelfPayload(true, "Live TV · On Now", items, guideActivityClassName = JellyfinGuideActivity::class.java.name),
+            hasMissingLogos = proxied.hasMissingLogos,
+        )
     }
 
     private fun unavailable(reason: String) = ShelfPayload(false, "Live TV", emptyList(), reason)
 
     private companion object {
+        val logoSemaphore = Semaphore(LOGO_FETCH_PERMITS)
         val refreshScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val shelfCache = JellyfinShelfCache(refreshScope, SystemClock::elapsedRealtime)
     }

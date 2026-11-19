@@ -27,12 +27,13 @@ internal class JellyfinShelfCache(
     private val clock: () -> Long,
     private val waitBudgetMs: Long = 3_300,
     private val fetchTimeoutMs: Long = 25_000,
-    private val successFreshMs: Long = 45_000,
+    private val successFreshMs: Long = SUCCESS_FRESH_MS,
+    private val partialLogoFreshMs: Long = PARTIAL_LOGO_FRESH_MS,
     private val successStaleMs: Long = 90_000,
-    private val failureBackoffMs: Long = 3_000,
+    private val failureBackoffMs: Long = FAILURE_FRESH_MS,
 ) {
     private sealed interface Outcome {
-        data class Success(val payload: ShelfPayload) : Outcome
+        data class Success(val payload: ShelfPayload, val hasMissingLogos: Boolean = false) : Outcome
         data class Confirmed(val payload: ShelfPayload) : Outcome
         data object Transient : Outcome
     }
@@ -50,7 +51,10 @@ internal class JellyfinShelfCache(
      * @param fetch returns a confirmed payload (`available` true or false); throws on transient errors.
      * @return the payload to serve, or `null` for a transient failure with no eligible cached success.
      */
-    suspend fun get(config: JellyfinConfig, fetch: suspend (JellyfinConfig) -> ShelfPayload): ShelfPayload? {
+    suspend fun get(config: JellyfinConfig, fetch: suspend (JellyfinConfig) -> ShelfPayload): ShelfPayload? =
+        getFetch(config) { ShelfFetch(fetch(it)) }
+
+    suspend fun getFetch(config: JellyfinConfig, fetch: suspend (JellyfinConfig) -> ShelfFetch): ShelfPayload? {
         val refresh = synchronized(lock) {
             if (snapshot != config) {
                 pending?.cancel()
@@ -63,7 +67,10 @@ internal class JellyfinShelfCache(
             val now = clock()
             val outcomeAge = now - lastOutcomeAt
             when (val outcome = lastOutcome) {
-                is Outcome.Success -> if (outcomeAge < successFreshMs) return outcome.payload
+                is Outcome.Success -> {
+                    val ttl = if (outcome.hasMissingLogos) partialLogoFreshMs else successFreshMs
+                    if (outcomeAge < ttl) return outcome.payload
+                }
                 is Outcome.Confirmed -> if (outcomeAge < failureBackoffMs) return outcome.payload
                 Outcome.Transient -> if (outcomeAge < failureBackoffMs && pending == null) return staleGoodLocked(now)
                 null -> Unit
@@ -82,14 +89,18 @@ internal class JellyfinShelfCache(
 
     private fun startRefreshLocked(
         config: JellyfinConfig,
-        fetch: suspend (JellyfinConfig) -> ShelfPayload,
+        fetch: suspend (JellyfinConfig) -> ShelfFetch,
     ): Deferred<Outcome> {
         // Compare by epoch, not config identity: callers load a fresh (equal) config per call.
         val generation = epoch
         return scope.async(start = CoroutineStart.LAZY) {
             val outcome = try {
-                val payload = withTimeout(fetchTimeoutMs) { fetch(config) }
-                if (payload.available) Outcome.Success(payload) else Outcome.Confirmed(payload)
+                val result = withTimeout(fetchTimeoutMs) { fetch(config) }
+                if (result.payload.available) {
+                    Outcome.Success(result.payload, result.hasMissingLogos)
+                } else {
+                    Outcome.Confirmed(result.payload)
+                }
             } catch (_: TimeoutCancellationException) {
                 Outcome.Transient
             } catch (cancelled: CancellationException) {

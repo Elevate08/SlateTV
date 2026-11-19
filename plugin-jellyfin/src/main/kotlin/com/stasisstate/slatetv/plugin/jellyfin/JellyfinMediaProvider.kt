@@ -37,8 +37,9 @@ internal class JellyfinLogoCache(private val context: Context) {
         imageUrl: String,
         imageTag: String?,
         grantPackage: String,
+        namespace: String,
     ): Uri? {
-        val name = cacheKey("$imageUrl|${imageTag.orEmpty()}")
+        val name = cacheKeyFor(namespace, imageUrl, imageTag)
         val folder = logoDirectory(context)
         val existing = synchronized(cacheLock) {
             val file = File(folder, name)
@@ -97,9 +98,13 @@ internal class JellyfinLogoCache(private val context: Context) {
         }
     }
 
-    private fun cacheKey(input: String): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
-        return digest.take(16).joinToString("") { "%02x".format(it) }
+    companion object {
+        /** Credential-scoped cache key so a changed user/API key never reuses logos fetched under the old one. */
+        internal fun cacheKeyFor(namespace: String, imageUrl: String, imageTag: String?): String {
+            val digest = MessageDigest.getInstance("SHA-256")
+                .digest("$namespace|$imageUrl|${imageTag.orEmpty()}".toByteArray())
+            return digest.take(16).joinToString("") { "%02x".format(it) }
+        }
     }
 }
 

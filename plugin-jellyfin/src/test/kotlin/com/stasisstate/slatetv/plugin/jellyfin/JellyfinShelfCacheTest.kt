@@ -212,4 +212,31 @@ class JellyfinShelfCacheTest {
         assertEquals(1, fetcher.calls)
         scope.cancel()
     }
+
+    @Test
+    fun partialLogoFetchUsesShorterFreshTtlInCache() = runTest {
+        val (cache, scope) = cache()
+        var calls = 0
+        val partial = ShelfPayload(true, "Live TV partial", emptyList())
+        val full = ShelfPayload(true, "Live TV full", emptyList())
+
+        assertEquals(partial, cache.getFetch(config) { calls++; ShelfFetch(partial, hasMissingLogos = true) })
+        assertEquals(1, calls)
+
+        // Still fresh at 9.9s
+        advanceTimeBy(9_999)
+        assertEquals(partial, cache.getFetch(config) { calls++; ShelfFetch(full, hasMissingLogos = false) })
+        assertEquals(1, calls)
+
+        // Expires at 10s (PARTIAL_LOGO_FRESH_MS) and refreshes to complete shelf
+        advanceTimeBy(1)
+        assertEquals(full, cache.getFetch(config) { calls++; ShelfFetch(full, hasMissingLogos = false) })
+        assertEquals(2, calls)
+
+        // Complete shelf stays fresh well past 10s (up to 45s)
+        advanceTimeBy(20_000)
+        assertEquals(full, cache.getFetch(config) { calls++; ShelfFetch(partial, hasMissingLogos = true) })
+        assertEquals(2, calls)
+        scope.cancel()
+    }
 }
