@@ -136,10 +136,10 @@ internal class SettingsDrawerController(
         if (shelfRegistry.plugins.isEmpty()) addSectionHeader("Install a Slate TV shelf plugin APK to add a home shelf.")
         for (plugin in shelfRegistry.plugins) {
             val metadata = plugin.metadata
-            val enabled = metadata.id !in settings.disabledShelfPluginIds
+            val enabled = !shelfRegistry.isDisabled(metadata.id, settings.disabledShelfPluginIds)
             addRow(metadata.name, if (enabled) "Enabled" else "Disabled", "shelf:${metadata.id}") {
                 val updated = preferences.update {
-                    val disabled = it.disabledShelfPluginIds
+                    val disabled = shelfRegistry.migrateDisabledIds(it.disabledShelfPluginIds)
                     it.copy(disabledShelfPluginIds = if (enabled) disabled + metadata.id else disabled - metadata.id)
                 }
                 onSettingsChanged(updated, false, false)

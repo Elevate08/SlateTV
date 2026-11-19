@@ -18,7 +18,8 @@ internal class ExternalShelfPluginAdapter(
     private val context: Context,
     private val component: ComponentName,
     private val declared: ShelfPluginMetadata,
-) : ShelfPlugin {
+    override val legacyManifestId: String? = null,
+) : ShelfPlugin, LegacyManifestIdClaimant {
     @Volatile
     override var metadata = declared
         private set

@@ -30,6 +30,53 @@ class ShelfHostingTest {
     }
 
     @Test
+    fun legacyManifestIdMigratesOnlyWhenClaimedByExactlyOneService() {
+        val jellyfin = Provider("shelf:jf/.Svc", "plugin.jellyfin.livetv")
+        val spoofA = Provider("shelf:a/.Svc", "plugin.dup")
+        val spoofB = Provider("shelf:b/.Svc", "plugin.dup")
+        val registry = ShelfPluginRegistry { listOf(jellyfin, spoofA, spoofB) }
+        registry.refresh()
+
+        assertEquals(mapOf("plugin.jellyfin.livetv" to "shelf:jf/.Svc"), registry.legacyAliases)
+        assertEquals("shelf:jf/.Svc", registry.canonicalId("plugin.jellyfin.livetv"))
+        assertEquals("plugin.dup", registry.canonicalId("plugin.dup"))
+        assertEquals("unknown", registry.canonicalId("unknown"))
+        assertEquals("shelf:a/.Svc", registry.canonicalId("shelf:a/.Svc"))
+
+        val saved = setOf("plugin.jellyfin.livetv", "plugin.dup", "shelf:b/.Svc")
+        assertEquals(setOf("shelf:jf/.Svc", "plugin.dup", "shelf:b/.Svc"), registry.migrateDisabledIds(saved))
+        assertTrue(registry.isDisabled("shelf:jf/.Svc", saved))
+        assertTrue(registry.isDisabled("shelf:b/.Svc", saved))
+        // Ambiguous legacy disable must not silently disable either claimant
+        assertFalse(registry.isDisabled("shelf:a/.Svc", saved))
+        assertFalse(registry.isDisabled("shelf:jf/.Svc", emptySet()))
+    }
+
+    @Test
+    fun migrationIsIdempotentAndCanonicalIdsCannotBeHijackedByLegacyClaims() {
+        val real = Provider("shelf:real/.Svc")
+        val hijacker = Provider("shelf:evil/.Svc", "shelf:real/.Svc")
+        val registry = ShelfPluginRegistry { listOf(real, hijacker) }
+        registry.refresh()
+        assertTrue(registry.legacyAliases.isEmpty())
+        val once = registry.migrateDisabledIds(setOf("shelf:real/.Svc"))
+        assertEquals(setOf("shelf:real/.Svc"), once)
+        assertEquals(once, registry.migrateDisabledIds(once))
+        assertFalse(registry.isDisabled("shelf:evil/.Svc", once))
+    }
+
+    @Test
+    fun registrySnapshotUpdatesAliasesAndPluginsTogether() {
+        var installed = listOf<ShelfPlugin>(Provider("shelf:jf/.Svc", "legacy.jf"))
+        val registry = ShelfPluginRegistry { installed }
+        assertEquals("legacy.jf", registry.run { refresh(); legacyAliases.keys.single() })
+        installed = listOf(Provider("shelf:other/.Svc"))
+        registry.refresh()
+        assertTrue(registry.legacyAliases.isEmpty())
+        assertEquals(listOf("shelf:other/.Svc"), registry.plugins.map { it.metadata.id })
+    }
+
+    @Test
     fun sanitizationBoundsItemsAndRejectsUnsafeFields() {
         val provider = Provider("tv")
         val cards = (0..30).map {
@@ -238,7 +285,7 @@ class ShelfHostingTest {
         manager.stop()
     }
 
-    private class Provider(id: String) : ShelfPlugin {
+    private class Provider(id: String, override val legacyManifestId: String? = null) : ShelfPlugin, LegacyManifestIdClaimant {
         override val metadata = ShelfPluginMetadata(id, id, "", "1", "example.tv")
         var calls = 0
         var fail = false

@@ -26,13 +26,16 @@ class PluginRegistry(
         localPlugin,
     )
 
-    private val lock = Any()
+    /** Immutable external-plugin state, published as one unit so readers never see torn plugins/aliases. */
+    internal data class ExternalSnapshot(
+        val plugins: List<BackgroundPlugin>,
+        val legacyIdAliases: Map<String, String>,
+    )
 
     @Volatile
-    private var cachedExternal: List<BackgroundPlugin> = emptyList()
+    private var snapshot = ExternalSnapshot(emptyList(), emptyMap())
 
-    @Volatile
-    private var legacyAliases: Map<String, String> = emptyMap()
+    internal val externalSnapshot: ExternalSnapshot get() = snapshot
 
     fun refreshExternalPlugins(): List<BackgroundPlugin> {
         val ctx = context ?: return emptyList()
@@ -42,7 +45,7 @@ class PluginRegistry(
             pm.queryIntentServices(intent, PackageManager.GET_META_DATA)
         }.getOrDefault(emptyList())
 
-        val aliases = mutableMapOf<String, String>()
+        val legacyClaims = mutableListOf<Pair<String, String>>()
         val discovered = services.mapNotNull { ri ->
             val si = ri.serviceInfo ?: return@mapNotNull null
             if (!si.exported || !si.enabled) return@mapNotNull null
@@ -55,7 +58,7 @@ class PluginRegistry(
             // Key external plugins canonically by ComponentName (prevents ID spoofing)
             val canonicalId = "ext:${component.flattenToShortString()}"
             meta?.getString(PluginContract.META_PLUGIN_ID)?.takeIf { it.isNotBlank() }?.let { legacyId ->
-                aliases.putIfAbsent(legacyId, canonicalId)
+                legacyClaims += legacyId to canonicalId
             }
             val name = (meta?.getString(PluginContract.META_PLUGIN_NAME)
                 ?.takeIf { it.isNotBlank() }
@@ -82,19 +85,36 @@ class PluginRegistry(
             )
         }.sortedBy { it.metadata.id }.distinctBy { it.metadata.id }
 
-        synchronized(lock) {
-            cachedExternal = discovered
-            legacyAliases = aliases
-        }
+        return publishExternal(discovered, legacyClaims)
+    }
+
+    /**
+     * Atomically installs [discovered] plugins plus legacy-ID aliases. [legacyClaims] are
+     * (manifest ID, canonical ID) pairs from every discovered service; a manifest ID claimed by
+     * more than one distinct service is ambiguous and is rejected entirely.
+     */
+    internal fun publishExternal(
+        discovered: List<BackgroundPlugin>,
+        legacyClaims: List<Pair<String, String>>,
+    ): List<BackgroundPlugin> {
+        val builtInIds = builtInPlugins.map { it.metadata.id }.toSet()
+        val canonicalIds = discovered.map { it.metadata.id }.toSet()
+        val aliases = legacyClaims.groupBy({ it.first }, { it.second })
+            .filter { (legacy, owners) ->
+                owners.toSet().size == 1 && legacy !in builtInIds && legacy !in canonicalIds
+            }
+            .mapValues { it.value.first() }
+        snapshot = ExternalSnapshot(discovered, aliases)
         return discovered
     }
 
-    fun getAllPlugins(): List<BackgroundPlugin> = builtInPlugins + cachedExternal
+    fun getAllPlugins(): List<BackgroundPlugin> = builtInPlugins + snapshot.plugins
 
     fun getPluginById(id: String): BackgroundPlugin {
-        val all = getAllPlugins()
+        val current = snapshot
+        val all = builtInPlugins + current.plugins
         all.firstOrNull { it.metadata.id == id }?.let { return it }
-        val resolvedAlias = legacyAliases[id]
+        val resolvedAlias = current.legacyIdAliases[id]
         if (resolvedAlias != null) {
             all.firstOrNull { it.metadata.id == resolvedAlias }?.let { return it }
         }

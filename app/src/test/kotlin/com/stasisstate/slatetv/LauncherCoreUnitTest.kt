@@ -143,6 +143,57 @@ class LauncherCoreUnitTest {
         assertEquals(AmbientSlatePlugin.PLUGIN_ID, registry.getPluginById("nonexistent.plugin").metadata.id)
     }
 
+    private fun stubPlugin(id: String) = object : BackgroundPlugin {
+        override val metadata = PluginMetadata(id, id, "desc", "1.0", isExternal = true)
+        override suspend fun fetchNext(request: PluginRequestContext): BackgroundMedia? = null
+    }
+
+    @Test
+    fun `PluginRegistry resolves unambiguous legacy aliases and rejects ambiguous ones`() {
+        val registry = PluginRegistry(context = null)
+        val a = stubPlugin("ext:a/.Svc")
+        val b = stubPlugin("ext:b/.Svc")
+        val c = stubPlugin("ext:c/.Svc")
+        registry.publishExternal(
+            listOf(a, b, c),
+            listOf("legacy.unique" to "ext:a/.Svc", "legacy.dup" to "ext:b/.Svc", "legacy.dup" to "ext:c/.Svc"),
+        )
+        org.junit.Assert.assertSame(a, registry.getPluginById("legacy.unique"))
+        org.junit.Assert.assertSame(a, registry.getPluginById("ext:a/.Svc"))
+        assertEquals(mapOf("legacy.unique" to "ext:a/.Svc"), registry.externalSnapshot.legacyIdAliases)
+        assertEquals(AmbientSlatePlugin.PLUGIN_ID, registry.getPluginById("legacy.dup").metadata.id)
+    }
+
+    @Test
+    fun `PluginRegistry refuses legacy aliases that shadow built-in or canonical IDs`() {
+        val registry = PluginRegistry(context = null)
+        val a = stubPlugin("ext:a/.Svc")
+        registry.publishExternal(
+            listOf(a),
+            listOf(AmbientSlatePlugin.PLUGIN_ID to "ext:a/.Svc", "ext:a/.Svc" to "ext:a/.Svc"),
+        )
+        assertTrue(registry.externalSnapshot.legacyIdAliases.isEmpty())
+        assertEquals(AmbientSlatePlugin.PLUGIN_ID, registry.getPluginById(AmbientSlatePlugin.PLUGIN_ID).metadata.id)
+    }
+
+    @Test
+    fun `PluginRegistry publishes plugins and aliases as one atomic snapshot`() {
+        val registry = PluginRegistry(context = null)
+        val a = stubPlugin("ext:a/.Svc")
+        registry.publishExternal(listOf(a), listOf("legacy.a" to "ext:a/.Svc"))
+        val first = registry.externalSnapshot
+        org.junit.Assert.assertSame(a, registry.getPluginById("legacy.a"))
+
+        val b = stubPlugin("ext:b/.Svc")
+        registry.publishExternal(listOf(b), emptyList())
+        // Old snapshot is immutable; new snapshot never mixes old aliases with new plugins
+        assertEquals(mapOf("legacy.a" to "ext:a/.Svc"), first.legacyIdAliases)
+        assertEquals(listOf<BackgroundPlugin>(a), first.plugins)
+        assertTrue(registry.externalSnapshot.legacyIdAliases.isEmpty())
+        assertEquals(AmbientSlatePlugin.PLUGIN_ID, registry.getPluginById("legacy.a").metadata.id)
+        org.junit.Assert.assertSame(b, registry.getPluginById("ext:b/.Svc"))
+    }
+
     @Test
     fun `BitmapLoader calculateInSampleSize bounds both 4K and extreme panoramas`() {
         assertEquals(2, BitmapLoader.calculateInSampleSize(3840, 2160, 1920, 1080))

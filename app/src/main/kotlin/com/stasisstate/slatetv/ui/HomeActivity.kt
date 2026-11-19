@@ -72,7 +72,20 @@ class HomeActivity : AppCompatActivity() {
 
     private val shelfRegistry by lazy { ShelfPluginRegistry(this) }
     private val shelfManager by lazy {
-        ShelfManager(lifecycleScope, shelfRegistry) { app.launcherPreferences.load().disabledShelfPluginIds }
+        ShelfManager(lifecycleScope, shelfRegistry) { migratedDisabledShelfIds() }
+    }
+
+    /**
+     * Returns saved disabled shelf IDs with unambiguous legacy manifest IDs translated to canonical
+     * IDs, persisting the migration once the registry has resolved them.
+     */
+    private fun migratedDisabledShelfIds(): Set<String> {
+        val saved = app.launcherPreferences.load().disabledShelfPluginIds
+        val migrated = shelfRegistry.migrateDisabledIds(saved)
+        if (migrated != saved) {
+            app.launcherPreferences.update { it.copy(disabledShelfPluginIds = shelfRegistry.migrateDisabledIds(it.disabledShelfPluginIds)) }
+        }
+        return migrated
     }
     private lateinit var shelfController: HomeShelfController
     private var lastDockFocus: View? = null
