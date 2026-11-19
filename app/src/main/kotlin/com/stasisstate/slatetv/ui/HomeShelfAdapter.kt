@@ -3,7 +3,6 @@ package com.stasisstate.slatetv.ui
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.net.Uri
 import android.util.LruCache
 import android.view.LayoutInflater
 import android.view.View
@@ -17,22 +16,16 @@ import androidx.recyclerview.widget.RecyclerView
 import com.stasisstate.slatetv.NetworkClientFactory.executeCancellable
 import com.stasisstate.slatetv.R
 import com.stasisstate.slatetv.plugin.api.ShelfCard
+import com.stasisstate.slatetv.wallpaper.ContentUriOpener
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.ByteArrayOutputStream
-import java.io.InputStream
-import java.util.concurrent.SynchronousQueue
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
 
 internal class HomeShelfAdapter(
     private val context: Context,
@@ -108,44 +101,23 @@ internal class HomeShelfAdapter(
         }
     }
 
-    private suspend fun readContentBytes(uri: String): ByteArray? {
-        val deferred = CompletableDeferred<ByteArray?>()
-        val activeStream = AtomicReference<InputStream?>(null)
-        val future = runCatching {
-            contentExecutor.submit {
-                try {
-                    val parsed = Uri.parse(uri)
-                    val out = context.contentResolver.openInputStream(parsed)?.use { stream ->
-                        activeStream.set(stream)
-                        val buffer = ByteArray(8192)
-                        val bytes = ByteArrayOutputStream()
-                        var total = 0L
-                        while (true) {
-                            val read = stream.read(buffer)
-                            if (read == -1) break
-                            total += read
-                            if (total > MAX_IMAGE_BYTES) return@use null
-                            bytes.write(buffer, 0, read)
-                        }
-                        bytes.toByteArray()
-                    }
-                    deferred.complete(out)
-                } catch (_: Exception) {
-                    deferred.complete(null)
-                } finally {
-                    activeStream.set(null)
-                }
-            }
-        }.getOrNull() ?: return null
-
-        return try {
-            withTimeoutOrNull(CONTENT_URI_TIMEOUT_MS) { deferred.await() }
-        } finally {
-            if (!deferred.isCompleted) {
-                runCatching { activeStream.getAndSet(null)?.close() }
-                future.cancel(true)
-            }
+    private suspend fun readContentBytes(uri: String): ByteArray? = contentOpener.read(
+        context = context,
+        uri = uri,
+        timeoutMs = CONTENT_URI_TIMEOUT_MS,
+        maxBytes = MAX_IMAGE_BYTES,
+    ) { stream ->
+        val buffer = ByteArray(8192)
+        val bytes = ByteArrayOutputStream()
+        var total = 0L
+        while (true) {
+            val read = stream.read(buffer)
+            if (read == -1) break
+            total += read
+            if (total > MAX_IMAGE_BYTES) return@read null
+            bytes.write(buffer, 0, read)
         }
+        bytes.toByteArray()
     }
 
     private fun decodeDownsampled(bytes: ByteArray): Bitmap? {
@@ -173,12 +145,6 @@ internal class HomeShelfAdapter(
         const val MAX_IMAGE_BYTES = 2L * 1024 * 1024
         const val CONTENT_URI_TIMEOUT_MS = 4_000L
 
-        val contentExecutor = ThreadPoolExecutor(
-            0,
-            4,
-            30L,
-            TimeUnit.SECONDS,
-            SynchronousQueue(),
-        ) { work -> Thread(work, "slate-shelf-content").apply { isDaemon = true } }
+        val contentOpener = ContentUriOpener("slate-shelf-content")
     }
 }

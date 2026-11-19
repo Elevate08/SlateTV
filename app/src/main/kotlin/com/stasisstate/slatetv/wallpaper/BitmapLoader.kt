@@ -9,26 +9,18 @@ import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Shader
-import android.net.Uri
 import androidx.exifinterface.media.ExifInterface
 import com.stasisstate.slatetv.plugin.api.BackgroundMedia
 import com.stasisstate.slatetv.NetworkClientFactory
 import com.stasisstate.slatetv.NetworkClientFactory.executeCancellable
 import com.stasisstate.slatetv.shelf.sanitizeHeaders
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
-import java.io.InputStream
-import java.util.concurrent.SynchronousQueue
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.max
 import kotlin.math.min
 
@@ -160,35 +152,12 @@ class BitmapLoader(
     private suspend fun loadContentUriToCache(
         uri: String,
         media: BackgroundMedia,
-    ): WallpaperDiskCache.CachedEntry? {
-        val result = CompletableDeferred<WallpaperDiskCache.CachedEntry?>()
-        val activeStream = AtomicReference<InputStream?>(null)
-        val future = runCatching {
-            contentExecutor.submit {
-                try {
-                    val parsed = Uri.parse(uri)
-                    val entry = context.contentResolver.openInputStream(parsed)?.use { stream ->
-                        activeStream.set(stream)
-                        diskCache.putStream(media, stream, MAX_DOWNLOAD_BYTES)
-                    }
-                    result.complete(entry)
-                } catch (_: Exception) {
-                    result.complete(null)
-                } finally {
-                    activeStream.set(null)
-                }
-            }
-        }.getOrNull() ?: return null
-
-        return try {
-            withTimeoutOrNull(CONTENT_URI_TIMEOUT_MS) { result.await() }
-        } finally {
-            if (!result.isCompleted) {
-                runCatching { activeStream.getAndSet(null)?.close() }
-                future.cancel(true)
-            }
-        }
-    }
+    ): WallpaperDiskCache.CachedEntry? = contentOpener.read(
+        context = context,
+        uri = uri,
+        timeoutMs = CONTENT_URI_TIMEOUT_MS,
+        maxBytes = MAX_DOWNLOAD_BYTES,
+    ) { stream -> diskCache.putStream(media, stream, MAX_DOWNLOAD_BYTES) }
 
     private suspend fun downloadToCache(media: BackgroundMedia): WallpaperDiskCache.CachedEntry? {
         val parsedUrl = media.imageUri.toHttpUrlOrNull() ?: return null
@@ -319,14 +288,9 @@ class BitmapLoader(
         private const val CONTENT_URI_TIMEOUT_MS = 10_000L
         private const val MAX_DECODED_PIXELS = 4_500_000L // ~18 MB ARGB_8888 ceiling even for panoramas
 
-        // Bounded daemon pool for content:// reads so a stalled plugin provider cannot wedge Dispatchers.IO
-        private val contentExecutor = ThreadPoolExecutor(
-            0,
-            4,
-            30L,
-            TimeUnit.SECONDS,
-            SynchronousQueue(),
-        ) { work -> Thread(work, "slate-content-loader").apply { isDaemon = true } }
+        // Bounded, cancellation-aware, per-authority-capped reader so a stalled plugin provider cannot
+        // wedge Dispatchers.IO or starve other providers' content:// reads.
+        private val contentOpener = ContentUriOpener("slate-content-loader")
 
         internal fun calculateInSampleSize(srcW: Int, srcH: Int, reqW: Int, reqH: Int): Int {
             var inSampleSize = 1
