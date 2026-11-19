@@ -116,7 +116,7 @@ internal class ImmichMediaBuffer(
         limit: Int,
         request: PluginRequestContext,
         store: ImmichConfigStore,
-        publishLocal: (ImmichConfig, BackgroundMedia) -> String?,
+        publishLocal: suspend (ImmichConfig, BackgroundMedia, shouldPublish: () -> Boolean) -> String?,
     ): List<PluginMediaItem> {
         if (limit <= 0) return emptyList()
 
@@ -173,7 +173,7 @@ internal class ImmichMediaBuffer(
     private fun ensureRefillLocked(
         store: ImmichConfigStore,
         request: PluginRequestContext,
-        publishLocal: (ImmichConfig, BackgroundMedia) -> String?,
+        publishLocal: suspend (ImmichConfig, BackgroundMedia, shouldPublish: () -> Boolean) -> String?,
     ) {
         if (activeRefill?.isActive == true) return
         val gen = configGeneration
@@ -191,7 +191,9 @@ internal class ImmichMediaBuffer(
                     if (!isActive) break
                     val converted = item.forExternalHost {
                         try {
-                            publishLocal(config, item)
+                            // Re-checked under the cache lock so an invalidated refill never evicts,
+                            // publishes, or grants URI permissions.
+                            publishLocal(config, item) { synchronized(stateLock) { configGeneration == gen } }
                         } catch (_: IOException) {
                             null
                         }
@@ -275,13 +277,14 @@ class ImmichBackgroundPluginService : Service() {
                 limit = limit,
                 request = request,
                 store = store,
-                publishLocal = { config, item ->
+                publishLocal = { config, item, shouldPublish ->
                     cache.publish(
-                        config,
-                        item,
-                        listOf(SLATE_PACKAGE),
-                        protectedNames = ImmichRuntime.buffer.protectedMediaNames(),
-                    ).toString()
+                        config = config,
+                        media = item,
+                        grantPackages = listOf(SLATE_PACKAGE),
+                        protectedNames = { ImmichRuntime.buffer.protectedMediaNames() },
+                        shouldPublish = shouldPublish,
+                    )?.toString()
                 },
             )
         }
@@ -335,7 +338,8 @@ private fun signingCertSha256s(pm: PackageManager, targetPackage: String): Set<S
     }.toSet()
 }.getOrDefault(emptySet())
 
-internal fun BackgroundMedia.forExternalHost(publish: () -> String?): BackgroundMedia? {
+/** Inline so a suspending [publish] (and its cancellation) runs directly in the caller's coroutine. */
+internal inline fun BackgroundMedia.forExternalHost(publish: () -> String?): BackgroundMedia? {
     if (!allowUntrustedTls) return this
     val uri = publish() ?: return null
     return copy(imageUri = uri, headers = emptyMap(), allowUntrustedTls = false)

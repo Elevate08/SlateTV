@@ -136,7 +136,7 @@ class ImmichBackgroundPluginServiceTest {
                 // Cold call returns empty quickly at 150ms budget instead of blocking past host deadline
                 val startNs = System.nanoTime()
                 val cold = runBlocking {
-                    buffer.take(1, PluginRequestContext(), store) { _, _ -> null }
+                    buffer.take(1, PluginRequestContext(), store) { _, _, _ -> null }
                 }
                 val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
                 assertTrue("Cold miss returned $cold instead of empty", cold.isEmpty())
@@ -146,7 +146,7 @@ class ImmichBackgroundPluginServiceTest {
                 Thread.sleep(600L)
                 val warmStartNs = System.nanoTime()
                 val warm = runBlocking {
-                    buffer.take(1, PluginRequestContext(), store) { _, _ -> null }
+                    buffer.take(1, PluginRequestContext(), store) { _, _, _ -> null }
                 }
                 val warmElapsedMs = (System.nanoTime() - warmStartNs) / 1_000_000L
                 assertEquals(1, warm.size)
@@ -181,12 +181,12 @@ class ImmichBackgroundPluginServiceTest {
                 prefetchOverride = { _, _ -> listOf(photo("a"), photo("b")) },
             )
             val startNs = System.nanoTime()
-            val result = runBlocking { buffer.take(1, PluginRequestContext(), configuredStore) { _, _ -> null } }
+            val result = runBlocking { buffer.take(1, PluginRequestContext(), configuredStore) { _, _, _ -> null } }
             val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
             assertEquals(listOf("a"), result.map { it.id })
             assertTrue("Ready item must be returned without waiting ($elapsedMs ms)", elapsedMs < 500L)
             // Remaining item stays buffered for the next call
-            val next = runBlocking { buffer.take(1, PluginRequestContext(), configuredStore) { _, _ -> null } }
+            val next = runBlocking { buffer.take(1, PluginRequestContext(), configuredStore) { _, _, _ -> null } }
             assertEquals(listOf("b"), next.map { it.id })
         } finally {
             scope.cancel()
@@ -211,7 +211,7 @@ class ImmichBackgroundPluginServiceTest {
             )
             val result = runBlocking {
                 val pending = async(Dispatchers.Default) {
-                    buffer.take(1, PluginRequestContext(), configuredStore) { _, _ -> null }
+                    buffer.take(1, PluginRequestContext(), configuredStore) { _, _, _ -> null }
                 }
                 assertTrue(prefetchStarted.await(1, TimeUnit.SECONDS))
                 delay(50L) // let take subscribe to itemSignal
@@ -250,7 +250,7 @@ class ImmichBackgroundPluginServiceTest {
                 }
             }
             val startNs = System.nanoTime()
-            val result = runBlocking { buffer.take(1, PluginRequestContext(), configuredStore) { _, _ -> null } }
+            val result = runBlocking { buffer.take(1, PluginRequestContext(), configuredStore) { _, _, _ -> null } }
             val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
             assertEquals(listOf("raced"), result.map { it.id })
             assertTrue("Should wake as soon as the item lands ($elapsedMs ms)", elapsedMs < 1_500L)
@@ -275,7 +275,7 @@ class ImmichBackgroundPluginServiceTest {
                 },
             )
             val startNs = System.nanoTime()
-            val result = runBlocking { buffer.take(1, PluginRequestContext(), configuredStore) { _, _ -> null } }
+            val result = runBlocking { buffer.take(1, PluginRequestContext(), configuredStore) { _, _, _ -> null } }
             val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
             assertTrue(result.isEmpty())
             assertTrue("Should not wait out the RPC budget ($elapsedMs ms)", elapsedMs < 1_000L)
@@ -307,7 +307,7 @@ class ImmichBackgroundPluginServiceTest {
                 val results = runBlocking {
                     (0 until 2).map {
                         async(Dispatchers.Default) {
-                            buffer.take(1, PluginRequestContext(), configuredStore) { _, _ -> null }
+                            buffer.take(1, PluginRequestContext(), configuredStore) { _, _, _ -> null }
                         }
                     }.awaitAll()
                 }

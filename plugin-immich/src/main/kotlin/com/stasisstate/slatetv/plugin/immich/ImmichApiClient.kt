@@ -495,8 +495,12 @@ class ImmichApiClient(
         private const val MAX_RECENT_PAGES = 10
         private const val MAX_JSON_BYTES = 4L * 1024 * 1024
 
-        suspend fun OkHttpClient.executeCancellable(request: Request): Response {
-            val call = newCall(request)
+        suspend fun OkHttpClient.executeCancellable(request: Request): Response =
+            newCall(request).executeCancellable()
+
+        /** Enqueues this [Call] and suspends for its response, cancelling the call if the coroutine is cancelled. */
+        suspend fun Call.executeCancellable(): Response {
+            val call = this
             return suspendCancellableCoroutine { cont ->
                 cont.invokeOnCancellation { call.cancel() }
                 call.enqueue(object : Callback {
