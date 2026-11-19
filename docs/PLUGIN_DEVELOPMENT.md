@@ -1,74 +1,17 @@
-# Building External Background Plugins for Slate TV
+# Building External Plugins for Slate TV
 
-Slate TV discovers external background plugin APKs automatically via Android's `PackageManager` and communicates over a clean, versioned AIDL contract (`:plugin-api`).
+Slate TV discovers external plugin APKs automatically via Android's `PackageManager` and communicates over two versioned AIDL contracts in `:plugin-api` (`API_VERSION = 1`):
 
-Unlike older TV launcher plugin APIs, Slate TV's `PluginMediaItem` supports **arbitrary HTTP request headers** (`Bundle`), so self-hosted backends (Immich, Jellyfin, Plex, Home Assistant, Nextcloud) never have to leak secrets into URL query parameters.
+1. **Background Provider (`com.stasisstate.slatetv.plugin.BACKGROUND_PROVIDER`)** — Supplies full-bleed photos/art via `ISlateBackgroundPlugin` (reference implementations: `:plugin-immich` and `:plugin-sample-external`).
+2. **Home Shelf Provider (`com.stasisstate.slatetv.plugin.SHELF_PROVIDER`)** — Supplies optional, minimal home-screen shelves such as Live TV & Guides via `ISlateShelfPlugin` (reference implementation: `:plugin-jellyfin`).
 
----
-
-## 1. Add `:plugin-api` Dependency
-
-Include the `:plugin-api` module (or its AAR) in your plugin Android application module:
-
-```kotlin
-dependencies {
-    implementation(project(":plugin-api"))
-}
-```
+Both contracts support **arbitrary HTTP request headers** (`Bundle`), so self-hosted services never need to leak tokens in URL query parameters.
 
 ---
 
-## 2. Implement `ISlateBackgroundPlugin.Stub`
+## 1. Background Provider (`ISlateBackgroundPlugin`)
 
-Create an exported Android `Service` returning an `ISlateBackgroundPlugin.Stub()` binder:
-
-```kotlin
-class MyBackgroundPluginService : Service() {
-
-    private val binder = object : ISlateBackgroundPlugin.Stub() {
-        override fun getApiVersion(): Int = PluginContract.API_VERSION
-
-        override fun getPluginInfo(): PluginInfo = PluginInfo(
-            id = "com.example.myplugin",
-            name = "My Photo Feed",
-            description = "Custom backdrops from my server",
-            version = "1.0.0",
-            supportsNext = true,
-            settingsActivityClassName = MySettingsActivity::class.java.name,
-        )
-
-        override fun getNextMedia(options: Bundle?): PluginMediaItem {
-            val headers = Bundle().apply {
-                putString("Authorization", "Bearer my-token")
-            }
-            return PluginMediaItem(
-                id = "item-123",
-                imageUri = "https://photos.example.local/api/items/123/preview",
-                headers = headers,
-                subtitle = "Oct 2024 · Iceland",
-                width = 1920,
-                height = 1080,
-                allowUntrustedTls = false,
-            )
-        }
-
-        override fun getMediaBatch(count: Int, options: Bundle?): MutableList<PluginMediaItem> {
-            return mutableListOf(getNextMedia(options))
-        }
-    }
-
-    override fun onBind(intent: Intent?): IBinder = binder
-}
-```
-
-### Supported `imageUri` Schemes
-- `https://` or `http://` — Downloaded via OkHttp using the supplied `headers` Bundle and cached automatically in Slate TV's LRU disk cache.
-- `content://` — Read via `ContentResolver` (e.g., from a `FileProvider`).
-- `ambient://#hex1,#hex2,#hex3` — Zero-network procedural gradient rendered directly by Slate TV.
-
----
-
-## 3. Declare the Service in `AndroidManifest.xml`
+Declare an exported `Service` with intent filter `com.stasisstate.slatetv.plugin.BACKGROUND_PROVIDER`:
 
 ```xml
 <service
@@ -77,28 +20,47 @@ class MyBackgroundPluginService : Service() {
     <intent-filter>
         <action android:name="com.stasisstate.slatetv.plugin.BACKGROUND_PROVIDER" />
     </intent-filter>
-    <meta-data
-        android:name="com.stasisstate.slatetv.plugin.ID"
-        android:value="com.example.myplugin" />
-    <meta-data
-        android:name="com.stasisstate.slatetv.plugin.NAME"
-        android:value="My Photo Feed" />
-    <meta-data
-        android:name="com.stasisstate.slatetv.plugin.DESCRIPTION"
-        android:value="Custom backdrops from my server" />
-    <meta-data
-        android:name="com.stasisstate.slatetv.plugin.SETTINGS_ACTIVITY"
-        android:value="com.example.myplugin.MySettingsActivity" />
-    <meta-data
-        android:name="com.stasisstate.slatetv.plugin.API_VERSION"
-        android:value="1" />
+    <meta-data android:name="com.stasisstate.slatetv.plugin.ID" android:value="com.example.myplugin" />
+    <meta-data android:name="com.stasisstate.slatetv.plugin.NAME" android:value="My Photo Feed" />
+    <meta-data android:name="com.stasisstate.slatetv.plugin.DESCRIPTION" android:value="Custom photo backdrops" />
+    <meta-data android:name="com.stasisstate.slatetv.plugin.SETTINGS_ACTIVITY" android:value="com.example.myplugin.SettingsActivity" />
+    <meta-data android:name="com.stasisstate.slatetv.plugin.API_VERSION" android:value="1" />
 </service>
 ```
 
+Supported `PluginMediaItem.imageUri` schemes:
+- `https://` or `http://` (fetched with `headers`, origin-bound redirects)
+- `content://` (read via `ContentResolver` with `FLAG_GRANT_READ_URI_PERMISSION`, ideal for proxying self-signed LAN HTTPS servers as `:plugin-immich` does)
+- `ambient://#hex1,#hex2,#hex3` (zero-network procedural gradient)
+
 ---
 
-## 4. Lifecycle & Reliability Contract
+## 2. Home Shelf / Live TV Provider (`ISlateShelfPlugin`)
 
-- Slate TV binds your service **only when fetching** new metadata and immediately unbinds afterward, keeping idle RAM usage near zero.
-- IPC calls have a strict **5-second timeout**. If your plugin times out or throws an exception, Slate TV isolates the failure and keeps the last cached photo visible on screen.
-- See `:plugin-sample-external` in this repository for a complete working APK example.
+Declare an exported `Service` with intent filter `com.stasisstate.slatetv.plugin.SHELF_PROVIDER`:
+
+```xml
+<service
+    android:name=".MyShelfPluginService"
+    android:exported="true">
+    <intent-filter>
+        <action android:name="com.stasisstate.slatetv.plugin.SHELF_PROVIDER" />
+    </intent-filter>
+    <meta-data android:name="com.stasisstate.slatetv.plugin.ID" android:value="com.example.myshelf" />
+    <meta-data android:name="com.stasisstate.slatetv.plugin.NAME" android:value="My Live TV" />
+    <meta-data android:name="com.stasisstate.slatetv.plugin.DESCRIPTION" android:value="Live TV channels on the home screen" />
+    <meta-data android:name="com.stasisstate.slatetv.plugin.SETTINGS_ACTIVITY" android:value="com.example.myshelf.SettingsActivity" />
+    <meta-data android:name="com.stasisstate.slatetv.plugin.GUIDE_ACTIVITY" android:value="com.example.myshelf.GuideActivity" />
+    <meta-data android:name="com.stasisstate.slatetv.plugin.API_VERSION" android:value="1" />
+</service>
+```
+
+Return `ShelfPayload(available = false, ...)` whenever your service is unconfigured or the feature (e.g. Live TV tuner) is unavailable—Slate TV automatically hides the shelf so the home screen remains minimal.
+
+---
+
+## 3. Security & Lifecycle Rules
+
+- Verify `Binder.getCallingUid()` belongs to `com.stasisstate.slatetv` before returning auth headers or private media (as implemented in `:plugin-immich` and `:plugin-jellyfin`).
+- Slate TV binds on-demand, enforces strict **4-second** bind + RPC timeouts on bounded daemon threads, unbinds immediately afterward, and applies a 30-second cooldown after consecutive timeouts.
+- Slate TV strictly ignores `file://` image URIs and untrusted TLS overrides from external plugins, strips auth headers on cross-origin HTTP redirects, and blocks any launch intent targeting Slate TV's own package.
