@@ -28,3 +28,4 @@ include(":app")
 
 include(":plugin-jellyfin")
 include(":connector-livetv")
+include(":connector-extensions")
