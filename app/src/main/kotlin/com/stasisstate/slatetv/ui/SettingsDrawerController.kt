@@ -13,6 +13,7 @@ import androidx.core.content.ContextCompat
 import com.stasisstate.slatetv.R
 import com.stasisstate.slatetv.apps.AppRepository
 import com.stasisstate.slatetv.billing.TipJarState
+import com.stasisstate.slatetv.settings.DefaultLauncherHelper
 import com.stasisstate.slatetv.settings.LauncherPreferences
 import com.stasisstate.slatetv.settings.LauncherSettings
 import com.stasisstate.slatetv.wallpaper.WallpaperDiskCache
@@ -40,6 +41,8 @@ internal class SettingsDrawerController(
     private val shelfRegistry: ShelfPluginRegistry,
     private val onClearCache: () -> Unit,
     private val onTipSelected: (productId: String) -> Unit,
+    private val onSetDefaultHome: () -> Unit,
+    private val onManageDefaultHome: () -> Unit,
     private val onClosed: () -> Unit,
 ) {
     private var tipJarState: TipJarState = TipJarState()
@@ -95,7 +98,8 @@ internal class SettingsDrawerController(
 
         val memMb = currentAppRamMb()
         val cacheMb = diskCache.totalSizeBytes() / (1024.0 * 1024.0)
-        val homeState = if (appRepository.isSlateDefaultHome()) "Default Home" else "Not Default Home"
+        val isDefaultHome = DefaultLauncherHelper.isDefaultHome(context)
+        val homeState = if (isDefaultHome) "Default Home" else "Not Default Home"
         statusSummaryView.text = "$homeState · ${memMb} MB RAM · %.1f MB cache · $lastSyncStatus".format(cacheMb)
 
         itemsContainer.removeAllViews()
@@ -213,6 +217,17 @@ internal class SettingsDrawerController(
         addSectionHeader("APPS & SYSTEM")
 
         addRow(
+            "Default Home Launcher",
+            if (isDefaultHome) {
+                "Active — Slate TV is your default Home app (tap to manage)"
+            } else {
+                "Not set — Tap to set Slate TV as your default Home launcher"
+            },
+        ) {
+            if (isDefaultHome) onManageDefaultHome() else onSetDefaultHome()
+        }
+
+        addRow(
             "Include Sideloaded Phone Apps",
             if (settings.showSideloadedApps) "Showing TV + sideloaded apps" else "TV apps only",
         ) {
@@ -240,7 +255,7 @@ internal class SettingsDrawerController(
 
         addRow(
             "Android TV System Settings",
-            "Open Device Preferences and Default Home",
+            "Open device preferences",
         ) {
             close()
             runCatching {

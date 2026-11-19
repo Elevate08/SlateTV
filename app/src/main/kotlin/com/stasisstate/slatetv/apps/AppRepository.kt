@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
+import com.stasisstate.slatetv.plugin.api.PluginContract
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -19,12 +20,13 @@ class AppRepository(private val context: Context) {
     suspend fun loadInstalledApps(includeSideloaded: Boolean): List<AppInfo> =
         withContext(Dispatchers.IO) {
             val resultByPackage = LinkedHashMap<String, AppInfo>()
+            val excludedPluginPackages = collectExcludedPluginPackages()
 
             val leanbackIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
             val leanbackActivities = queryIntentActivitiesCompat(leanbackIntent)
             for (ri in leanbackActivities) {
                 val pkg = ri.activityInfo?.packageName ?: continue
-                if (pkg == selfPackage || resultByPackage.containsKey(pkg)) continue
+                if (!isVisiblePackage(pkg, selfPackage, excludedPluginPackages) || resultByPackage.containsKey(pkg)) continue
                 buildAppInfo(ri, isLeanback = true)?.let { resultByPackage[pkg] = it }
             }
 
@@ -33,13 +35,23 @@ class AppRepository(private val context: Context) {
                 val standardActivities = queryIntentActivitiesCompat(standardIntent)
                 for (ri in standardActivities) {
                     val pkg = ri.activityInfo?.packageName ?: continue
-                    if (pkg == selfPackage || resultByPackage.containsKey(pkg)) continue
+                    if (!isVisiblePackage(pkg, selfPackage, excludedPluginPackages) || resultByPackage.containsKey(pkg)) continue
                     buildAppInfo(ri, isLeanback = false)?.let { resultByPackage[pkg] = it }
                 }
             }
 
             resultByPackage.values.sortedBy { it.label.lowercase() }
         }
+
+    /** Packages of installed Slate TV plugin APKs (background and shelf providers). */
+    private fun collectExcludedPluginPackages(): Set<String> {
+        val packages = HashSet<String>()
+        for (action in PLUGIN_ACTIONS) {
+            val services = runCatching { pm.queryIntentServices(Intent(action), 0) }.getOrDefault(emptyList())
+            services.mapNotNullTo(packages) { it.serviceInfo?.packageName }
+        }
+        return packages
+    }
 
     private fun queryIntentActivitiesCompat(intent: Intent): List<ResolveInfo> {
         return runCatching {
@@ -82,4 +94,21 @@ class AppRepository(private val context: Context) {
         val resolved = runCatching { pm.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY) }.getOrNull()
         return resolved?.activityInfo?.packageName == selfPackage
     }
+
+    companion object {
+        private val PLUGIN_ACTIONS = listOf(
+            PluginContract.ACTION_BACKGROUND_PROVIDER,
+            PluginContract.ACTION_SHELF_PROVIDER,
+        )
+    }
 }
+
+internal fun isVisiblePackage(pkg: String, selfPackage: String, pluginPackages: Set<String>): Boolean =
+    pkg != selfPackage && pkg !in pluginPackages
+
+/** Drops Slate TV itself and installed plugin APKs from launcher candidates, preserving order. */
+internal fun filterVisiblePackages(
+    candidates: List<String>,
+    selfPackage: String,
+    pluginPackages: Set<String>,
+): List<String> = candidates.filter { isVisiblePackage(it, selfPackage, pluginPackages) }

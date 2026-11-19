@@ -28,6 +28,8 @@ import android.widget.TextClock
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -36,6 +38,7 @@ import com.stasisstate.slatetv.R
 import com.stasisstate.slatetv.SlateApplication
 import com.stasisstate.slatetv.apps.AppInfo
 import com.stasisstate.slatetv.billing.TipJar
+import com.stasisstate.slatetv.settings.DefaultLauncherHelper
 import com.stasisstate.slatetv.settings.LauncherSettings
 import androidx.lifecycle.lifecycleScope
 import com.stasisstate.slatetv.shelf.ShelfManager
@@ -102,6 +105,9 @@ class HomeActivity : AppCompatActivity() {
     private var wallpaperCollectJob: Job? = null
     private var tipJarCollectJob: Job? = null
     private var reloadAppsJob: Job? = null
+
+    private val homeRoleLauncher: ActivityResultLauncher<Intent> =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { onHomeRoleResult() }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val enterIdleRunnable = Runnable { enterIdleGalleryMode() }
@@ -218,6 +224,7 @@ class HomeActivity : AppCompatActivity() {
         updateOfflineIndicator()
         ensureValidFocus()
         resetIdleTimer()
+        refreshSettingsIfOpen()
     }
 
     override fun onPause() {
@@ -434,10 +441,42 @@ class HomeActivity : AppCompatActivity() {
             onTipSelected = { productId ->
                 tipJar.launch(this, productId)
             },
+            onSetDefaultHome = { requestDefaultHome() },
+            onManageDefaultHome = { showDefaultLauncherDialog() },
             onClosed = {
                 hudContainer.visibility = View.VISIBLE
                 ensureValidFocus()
             },
+        )
+    }
+
+    private fun requestDefaultHome() {
+        val roleIntent = DefaultLauncherHelper.buildRequestHomeRoleIntent(this)
+        if (roleIntent == null) {
+            if (!DefaultLauncherHelper.openHomeSettingsFallback(this)) showDefaultLauncherDialog()
+            return
+        }
+        runCatching { homeRoleLauncher.launch(roleIntent) }.onFailure { showDefaultLauncherDialog() }
+    }
+
+    private fun onHomeRoleResult() {
+        if (DefaultLauncherHelper.isDefaultHome(this)) {
+            Toast.makeText(this, "Slate TV is now your Default Home launcher", Toast.LENGTH_SHORT).show()
+            refreshSettingsIfOpen()
+        } else if (!DefaultLauncherHelper.openHomeSettingsFallback(this)) {
+            showDefaultLauncherDialog()
+        }
+    }
+
+    private fun refreshSettingsIfOpen() {
+        if (settingsController.isVisible) settingsController.rebuild(app.wallpaperManager.state.value.lastSyncStatus)
+    }
+
+    private fun showDefaultLauncherDialog() {
+        DefaultLauncherHelper.showDefaultLauncherDialog(
+            activity = this,
+            onRequestRole = { homeRoleLauncher.launch(it) },
+            onStatusChanged = { refreshSettingsIfOpen() },
         )
     }
 
