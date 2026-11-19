@@ -56,6 +56,8 @@ class SettingsDrawerController(
     }
 
     fun rebuild(lastSyncStatus: String) {
+        // Capture focused row key so toggling a setting preserves focus position cleanly
+        val previouslyFocusedKey = findFocusedRowKey(itemsContainer)
         val settings = preferences.load()
         val plugins = pluginRegistry.getAllPlugins()
         val activePlugin = pluginRegistry.getPluginById(settings.activePluginId)
@@ -161,6 +163,15 @@ class SettingsDrawerController(
             rebuild(lastSyncStatus)
         }
 
+        addRow(
+            "Keep Screen On (Photo Frame Mode)",
+            if (settings.keepScreenOn) "On — prevents Shield sleep/screensaver" else "Off — respects Shield sleep timer",
+        ) {
+            val updated = preferences.update { it.copy(keepScreenOn = !it.keepScreenOn) }
+            onSettingsChanged(updated, false, false)
+            rebuild(lastSyncStatus)
+        }
+
         addSectionHeader("APPS & SHIELD SYSTEM")
 
         addRow(
@@ -198,6 +209,13 @@ class SettingsDrawerController(
                 context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }
         }
+
+        if (previouslyFocusedKey != null) {
+            itemsContainer.post {
+                findRowByKey(itemsContainer, previouslyFocusedKey)?.requestFocus()
+                    ?: findFirstFocusable(itemsContainer)?.requestFocus()
+            }
+        }
     }
 
     private fun addSectionHeader(label: String) {
@@ -210,8 +228,9 @@ class SettingsDrawerController(
         })
     }
 
-    private fun addRow(title: String, subtitle: String, onClick: () -> Unit) {
+    private fun addRow(title: String, subtitle: String, rowKey: String = title, onClick: () -> Unit) {
         val row = LinearLayout(context).apply {
+            tag = rowKey
             orientation = LinearLayout.VERTICAL
             background = ContextCompat.getDrawable(context, R.drawable.bg_settings_row)
             isFocusable = true
@@ -235,6 +254,22 @@ class SettingsDrawerController(
             setTextColor(Color.parseColor("#94A3B8"))
         })
         itemsContainer.addView(row)
+    }
+
+    private fun findFocusedRowKey(group: ViewGroup): String? {
+        for (i in 0 until group.childCount) {
+            val child = group.getChildAt(i)
+            if (child.hasFocus()) return child.tag as? String
+        }
+        return null
+    }
+
+    private fun findRowByKey(group: ViewGroup, key: String): View? {
+        for (i in 0 until group.childCount) {
+            val child = group.getChildAt(i)
+            if (child.tag == key && child.isFocusable) return child
+        }
+        return null
     }
 
     private fun findFirstFocusable(group: ViewGroup): View? {

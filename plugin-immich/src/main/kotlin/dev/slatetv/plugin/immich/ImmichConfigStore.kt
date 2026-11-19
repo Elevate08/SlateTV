@@ -23,9 +23,10 @@ class SharedPrefsImmichConfigStore(context: Context) : ImmichConfigStore {
             ImmichImageQuality.valueOf(qualityName ?: ImmichImageQuality.PREVIEW.name)
         }.getOrDefault(ImmichImageQuality.PREVIEW)
 
+        val storedKey = prefs.getString(KEY_API_KEY, "") ?: ""
         return ImmichConfig(
             serverUrl = prefs.getString(KEY_SERVER_URL, "") ?: "",
-            apiKey = prefs.getString(KEY_API_KEY, "") ?: "",
+            apiKey = KeystoreSecretCipher.decrypt(storedKey),
             sourceMode = sourceMode,
             selectedAlbumIds = prefs.getStringSet(KEY_ALBUM_IDS, emptySet())?.toSet() ?: emptySet(),
             imageQuality = quality,
@@ -35,9 +36,10 @@ class SharedPrefsImmichConfigStore(context: Context) : ImmichConfigStore {
     }
 
     override fun save(config: ImmichConfig) {
+        val encryptedKey = KeystoreSecretCipher.encrypt(config.apiKey.trim())
         prefs.edit()
             .putString(KEY_SERVER_URL, config.normalizedServerUrl)
-            .putString(KEY_API_KEY, config.apiKey.trim())
+            .putString(KEY_API_KEY, encryptedKey)
             .putString(KEY_SOURCE_MODE, config.sourceMode.name)
             .putStringSet(KEY_ALBUM_IDS, config.selectedAlbumIds)
             .putString(KEY_IMAGE_QUALITY, config.imageQuality.name)
@@ -47,7 +49,7 @@ class SharedPrefsImmichConfigStore(context: Context) : ImmichConfigStore {
     }
 
     companion object {
-        private const val PREFS_NAME = "slate_immich_plugin_prefs"
+        const val PREFS_NAME = "slate_immich_plugin_prefs"
         private const val KEY_SERVER_URL = "server_url"
         private const val KEY_API_KEY = "api_key"
         private const val KEY_SOURCE_MODE = "source_mode"

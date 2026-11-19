@@ -250,7 +250,7 @@ class ImmichSetupDialog(
         }
         sourceModeValueView.text = workingConfig.sourceMode.displayName
         albumsValueView.text = when {
-            workingConfig.selectedAlbumIds.isEmpty() -> "None selected (uses all albums / library)"
+            workingConfig.selectedAlbumIds.isEmpty() -> "None selected (falls back to Random Library)"
             else -> "${workingConfig.selectedAlbumIds.size} album(s) selected"
         }
         qualityValueView.text = workingConfig.imageQuality.displayName
@@ -464,7 +464,7 @@ class ImmichSetupDialog(
             setBackgroundColor(Color.parseColor("#141B26"))
             setPadding(dp(12), dp(12), dp(12), dp(12))
             inputType = if (isSecret) {
-                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             } else {
                 InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             }

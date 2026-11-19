@@ -3,15 +3,19 @@ package dev.slatetv.launcher.wallpaper
 import dev.slatetv.plugin.api.BackgroundMedia
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
+import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
 /**
- * Bounded LRU disk cache for background images + metadata sidecars.
+ * Bounded, atomic LRU disk cache for background images + metadata sidecars.
  *
- * Key Nvidia Shield reliability guarantee:
- * Stores a `last_shown.json` pointer to the most recently displayed wallpaper so
- * cold boots and HDMI-CEC wake-ups render immediately from local flash in < 20ms
- * with ZERO network I/O on the critical path.
+ * Key NVIDIA Shield reliability guarantees:
+ * - Writes image bytes, sidecar JSON, and per-plugin `last_shown` pointers atomically
+ *   via temp file + rename so crashes/power-loss never leave partial corrupt files.
+ * - Streams downloads directly to disk with an explicit byte cap (never buffers huge originals in RAM).
+ * - Protects last-shown frames during LRU eviction and invalidates corrupt entries on decode failure.
  */
 class WallpaperDiskCache(
     private val cacheDir: File,
@@ -42,18 +46,65 @@ class WallpaperDiskCache(
         return File(cacheDir, "$key.json")
     }
 
-    private fun lastShownPointer(): File = File(cacheDir, "last_shown.json")
+    private fun lastShownPointerForPlugin(pluginId: String): File {
+        val key = sha256Short(pluginId)
+        return File(cacheDir, "last_shown_$key.json")
+    }
 
     @Synchronized
     fun put(media: BackgroundMedia, bytes: ByteArray): CachedEntry {
+        return putStream(media, bytes.inputStream(), maxBytesPerItem = maxOf(bytes.size.toLong(), 1L))
+            ?: throw IllegalStateException("Failed to write cached entry")
+    }
+
+    /**
+     * Streams [input] into a bounded temp file and atomically commits it to the cache.
+     * Returns null if the stream is empty or exceeds [maxBytesPerItem].
+     */
+    @Synchronized
+    fun putStream(
+        media: BackgroundMedia,
+        input: InputStream,
+        maxBytesPerItem: Long = DEFAULT_MAX_ITEM_BYTES,
+    ): CachedEntry? {
         if (!cacheDir.exists()) cacheDir.mkdirs()
         val imgFile = fileForMediaId(media.id)
         val tmpFile = File(cacheDir, "${imgFile.name}.tmp")
-        tmpFile.writeBytes(bytes)
-        if (!tmpFile.renameTo(imgFile)) {
-            imgFile.writeBytes(bytes)
-            tmpFile.delete()
+        var totalRead = 0L
+        val buffer = ByteArray(16 * 1024)
+
+        val ok = try {
+            FileOutputStream(tmpFile).use { out ->
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n == -1) break
+                    totalRead += n
+                    if (totalRead > maxBytesPerItem) {
+                        return@use false
+                    }
+                    out.write(buffer, 0, n)
+                }
+                out.flush()
+                totalRead > 0L
+            }
+        } catch (_: Exception) {
+            false
         }
+
+        if (!ok) {
+            tmpFile.delete()
+            return null
+        }
+
+        if (!tmpFile.renameTo(imgFile)) {
+            val copied = runCatching {
+                tmpFile.copyTo(imgFile, overwrite = true)
+                true
+            }.getOrDefault(false)
+            tmpFile.delete()
+            if (!copied) return null
+        }
+
         val now = System.currentTimeMillis()
         imgFile.setLastModified(now)
 
@@ -63,9 +114,9 @@ class WallpaperDiskCache(
             put("width", media.width)
             put("height", media.height)
         }
-        metaFileForMediaId(media.id).writeText(metaJson.toString())
+        writeTextAtomic(metaFileForMediaId(media.id), metaJson.toString())
 
-        evictIfNeeded(protectFileName = imgFile.name)
+        evictIfNeeded(protectFileNames = collectProtectedFileNames(imgFile.name))
 
         return CachedEntry(
             mediaId = media.id,
@@ -92,7 +143,13 @@ class WallpaperDiskCache(
     }
 
     @Synchronized
-    fun markLastShown(entry: CachedEntry) {
+    fun remove(mediaId: String) {
+        fileForMediaId(mediaId).delete()
+        metaFileForMediaId(mediaId).delete()
+    }
+
+    @Synchronized
+    fun markLastShown(pluginId: String, entry: CachedEntry) {
         val obj = JSONObject().apply {
             put("id", entry.mediaId)
             put("file", entry.imageFile.name)
@@ -100,17 +157,22 @@ class WallpaperDiskCache(
             put("width", entry.width)
             put("height", entry.height)
         }
-        runCatching { lastShownPointer().writeText(obj.toString()) }
+        runCatching { writeTextAtomic(lastShownPointerForPlugin(pluginId), obj.toString()) }
     }
 
     @Synchronized
-    fun getLastShown(): CachedEntry? {
-        val pointer = lastShownPointer()
+    fun getLastShown(pluginId: String): CachedEntry? {
+        val pointer = lastShownPointerForPlugin(pluginId)
         if (!pointer.exists()) return null
         return runCatching {
             val obj = JSONObject(pointer.readText())
             val fileName = obj.optString("file")
+            // Guard against path traversal in tampered pointer files
+            if (fileName.isBlank() || fileName.contains('/') || fileName.contains('\\') || fileName.contains("..")) {
+                return null
+            }
             val imgFile = File(cacheDir, fileName)
+            if (imgFile.canonicalFile.parentFile != cacheDir.canonicalFile) return null
             if (!imgFile.exists() || imgFile.length() <= 0L) return null
             val subtitle = obj.optString("subtitle").takeIf { it.isNotBlank() && it != "null" }
             CachedEntry(
@@ -136,6 +198,28 @@ class WallpaperDiskCache(
         cacheDir.listFiles()?.forEach { it.delete() }
     }
 
+    private fun writeTextAtomic(target: File, text: String) {
+        val tmp = File(cacheDir, "${target.name}.tmp")
+        tmp.writeText(text, StandardCharsets.UTF_8)
+        if (!tmp.renameTo(target)) {
+            target.writeText(text, StandardCharsets.UTF_8)
+            tmp.delete()
+        }
+    }
+
+    private fun collectProtectedFileNames(currentFileName: String): Set<String> {
+        val protected = mutableSetOf(currentFileName)
+        cacheDir.listFiles()
+            ?.filter { it.isFile && it.name.startsWith("last_shown_") && it.name.endsWith(".json") }
+            ?.forEach { ptr ->
+                runCatching {
+                    val f = JSONObject(ptr.readText()).optString("file")
+                    if (f.isNotBlank()) protected += f
+                }
+            }
+        return protected
+    }
+
     private fun readMetadata(file: File, fallbackId: String): Triple<String, String?, Pair<Int, Int>> {
         if (!file.exists()) return Triple(fallbackId, null, 0 to 0)
         return runCatching {
@@ -148,7 +232,7 @@ class WallpaperDiskCache(
         }.getOrDefault(Triple(fallbackId, null, 0 to 0))
     }
 
-    private fun evictIfNeeded(protectFileName: String) {
+    private fun evictIfNeeded(protectFileNames: Set<String>) {
         val imgFiles = cacheDir.listFiles()
             ?.filter { it.isFile && it.name.endsWith(".img") }
             ?.sortedBy { it.lastModified() }
@@ -159,7 +243,7 @@ class WallpaperDiskCache(
         val iter = imgFiles.iterator()
         while (iter.hasNext() && (imgFiles.size > maxEntries || totalBytes > maxBytes)) {
             val oldest = iter.next()
-            if (oldest.name == protectFileName) continue
+            if (oldest.name in protectFileNames) continue
             totalBytes -= oldest.length()
             val metaName = oldest.name.removeSuffix(".img") + ".json"
             oldest.delete()
@@ -171,5 +255,9 @@ class WallpaperDiskCache(
     private fun sha256Short(input: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
         return digest.take(16).joinToString("") { "%02x".format(it) }
+    }
+
+    companion object {
+        const val DEFAULT_MAX_ITEM_BYTES = 16L * 1024L * 1024L
     }
 }

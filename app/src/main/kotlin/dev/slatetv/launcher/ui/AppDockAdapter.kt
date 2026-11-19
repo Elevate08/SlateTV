@@ -6,6 +6,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.TextView
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import dev.slatetv.launcher.R
 import dev.slatetv.launcher.apps.AppInfo
@@ -18,10 +19,28 @@ class AppDockAdapter(
 
     private val items = mutableListOf<AppInfo>()
 
+    init {
+        setHasStableIds(true)
+    }
+
+    override fun getItemId(position: Int): Long = items[position].packageName.hashCode().toLong()
+
     fun submitList(apps: List<AppInfo>) {
+        val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+            override fun getOldListSize(): Int = items.size
+            override fun getNewListSize(): Int = apps.size
+            override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean =
+                items[oldItemPosition].packageName == apps[newItemPosition].packageName
+
+            override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                val old = items[oldItemPosition]
+                val new = apps[newItemPosition]
+                return old.packageName == new.packageName && old.label == new.label
+            }
+        })
         items.clear()
         items.addAll(apps)
-        notifyDataSetChanged()
+        diff.dispatchUpdatesTo(this)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): DockViewHolder {

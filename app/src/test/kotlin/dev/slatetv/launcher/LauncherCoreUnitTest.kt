@@ -18,6 +18,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.File
 
 class LauncherCoreUnitTest {
 
@@ -54,7 +55,6 @@ class LauncherCoreUnitTest {
             prefs.getPinnedPackages(),
         )
 
-        // Move YouTube left once
         assertTrue(prefs.movePinned("com.google.android.youtube.tv", -1))
         assertEquals(
             listOf(
@@ -66,24 +66,22 @@ class LauncherCoreUnitTest {
             prefs.getPinnedPackages(),
         )
 
-        // Pin additional app
         prefs.pin("com.example.fifth")
         assertTrue("com.example.fifth" in prefs.getPinnedPackages())
 
-        // Hide removes from pinned and adds to hidden
         prefs.hide("com.example.fifth")
         assertFalse("com.example.fifth" in prefs.getPinnedPackages())
         assertTrue("com.example.fifth" in prefs.getHiddenPackages())
 
-        // Re-seeding does not overwrite user customization
         prefs.seedDefaultsIfNeeded(installed + "com.netflix.ninja")
         assertFalse("com.netflix.ninja" in prefs.getPinnedPackages())
     }
 
     @Test
-    fun `WallpaperDiskCache stores metadata persists lastShown and evicts oldest entries`() {
+    fun `WallpaperDiskCache scopes lastShown per plugin protects it from eviction and enforces byte cap`() {
+        val dir = tempFolder.newFolder("wallpapers")
         val cache = WallpaperDiskCache(
-            cacheDir = tempFolder.newFolder("wallpapers"),
+            cacheDir = dir,
             maxBytes = 1024,
             maxEntries = 3,
         )
@@ -93,25 +91,43 @@ class LauncherCoreUnitTest {
         val m3 = BackgroundMedia(id = "immich:3", imageUri = "http://x/3", subtitle = "Mar 2025")
         val m4 = BackgroundMedia(id = "immich:4", imageUri = "http://x/4", subtitle = "Apr 2025")
 
-        cache.put(m1, ByteArray(100) { 1 })
+        val e1 = cache.put(m1, ByteArray(100) { 1 })
+        cache.markLastShown("builtin.immich", e1)
         Thread.sleep(15)
         cache.put(m2, ByteArray(100) { 2 })
         Thread.sleep(15)
-        val e3 = cache.put(m3, ByteArray(100) { 3 })
+        cache.put(m3, ByteArray(100) { 3 })
         Thread.sleep(15)
         cache.put(m4, ByteArray(100) { 4 })
 
-        // Oldest entry (m1) should have been evicted due to maxEntries = 3
-        assertNull(cache.get("immich:1"))
-        assertNotNull(cache.get("immich:4"))
-        assertEquals("Apr 2025", cache.get("immich:4")?.subtitle)
+        // e1 is protected because it is marked lastShown; m2 is evicted instead
+        assertNotNull(cache.get("immich:1"))
+        assertNull(cache.get("immich:2"))
+        assertEquals("Jan 2025", cache.getLastShown("builtin.immich")?.subtitle)
+        assertNull(cache.getLastShown("builtin.local_folder"))
 
-        // Mark last shown and verify instant restore lookup
-        cache.markLastShown(e3)
-        val restored = cache.getLastShown()
-        assertNotNull(restored)
-        assertEquals("immich:3", restored?.mediaId)
-        assertEquals("Mar 2025", restored?.subtitle)
+        // Streaming cap rejects oversized payloads cleanly
+        val tooBig = BackgroundMedia(id = "immich:huge", imageUri = "http://x/huge")
+        assertNull(cache.putStream(tooBig, ByteArray(500).inputStream(), maxBytesPerItem = 200))
+        assertNull(cache.get("immich:huge"))
+
+        // Removing corrupt entry deletes it
+        cache.remove("immich:4")
+        assertNull(cache.get("immich:4"))
+    }
+
+    @Test
+    fun `WallpaperDiskCache rejects path traversal in lastShown pointer`() {
+        val dir = tempFolder.newFolder("wallpapers_sec")
+        val cache = WallpaperDiskCache(dir)
+        val entry = cache.put(BackgroundMedia(id = "ok", imageUri = "http://x/1"), ByteArray(16) { 7 })
+        cache.markLastShown("plugin.test", entry)
+        // Tamper pointer file with path traversal
+        val ptr = dir.listFiles()!!.first { it.name.startsWith("last_shown_") }
+        ptr.writeText("""{"id":"bad","file":"../outside.txt"}""")
+        File(dir.parentFile, "outside.txt").writeText("secret")
+
+        assertNull(cache.getLastShown("plugin.test"))
     }
 
     @Test
@@ -126,9 +142,12 @@ class LauncherCoreUnitTest {
     }
 
     @Test
-    fun `BitmapLoader calculateInSampleSize downsamples 4K images safely for 1080p`() {
+    fun `BitmapLoader calculateInSampleSize bounds both 4K and extreme panoramas`() {
         assertEquals(2, BitmapLoader.calculateInSampleSize(3840, 2160, 1920, 1080))
         assertEquals(1, BitmapLoader.calculateInSampleSize(1920, 1080, 1920, 1080))
         assertEquals(4, BitmapLoader.calculateInSampleSize(8000, 6000, 1920, 1080))
+        // Extreme 12000x1000 panorama (12M pixels) must be downsampled to <= 4.5M pixels
+        val panoSample = BitmapLoader.calculateInSampleSize(12000, 1000, 1920, 1080)
+        assertTrue("Panorama must be downsampled (got $panoSample)", panoSample >= 2)
     }
 }

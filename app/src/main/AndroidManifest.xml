@@ -31,7 +31,7 @@
 
     <application
         android:name=".SlateApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:banner="@drawable/tv_banner"
         android:hardwareAccelerated="true"
         android:icon="@drawable/ic_launcher_slate"
@@ -42,16 +42,15 @@
 
         <!--
             Shield / HDMI-CEC Hardening:
-            - configChanges prevents Activity teardown when TV wakes over HDMI-CEC and
-              renegotiates display resolution, HDR, or color space (major cause of black
-              screens in other custom Android TV launchers).
+            - configChanges (including colorMode for HDR/Dolby Vision handshakes) prevents
+              Activity teardown when TV wakes over HDMI-CEC and renegotiates display mode.
             - singleTask + clearTaskOnLaunch + stateNotNeeded matches AOSP launcher semantics.
             - Zero Accessibility Service required.
         -->
         <activity
             android:name=".ui.HomeActivity"
             android:clearTaskOnLaunch="true"
-            android:configChanges="keyboard|keyboardHidden|navigation|screenSize|smallestScreenSize|screenLayout|orientation|uiMode|density|locale|layoutDirection"
+            android:configChanges="keyboard|keyboardHidden|navigation|screenSize|smallestScreenSize|screenLayout|orientation|uiMode|density|locale|layoutDirection|colorMode"
             android:excludeFromRecents="true"
             android:exported="true"
             android:launchMode="singleTask"

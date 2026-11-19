@@ -7,8 +7,13 @@ import dev.slatetv.launcher.wallpaper.LoadedBackdrop
 /**
  * Double-buffered GPU crossfade backdrop renderer with Smart Portrait Blur Pillarbox.
  *
- * Uses standard ImageViews (never SurfaceView/TextureView) so HDMI-CEC wakes on
- * Nvidia Shield never lose the GL surface or flash black.
+ * Uses standard ImageViews inside an isolated container (never SurfaceView/TextureView)
+ * so HDMI-CEC wakes on NVIDIA Shield never lose the surface or flash black.
+ *
+ * Hardening:
+ * - Releases outgoing drawables immediately after fade completion (keeps peak RAM minimal).
+ * - Deduplicates on `(mediaId, smartPortraitBlurApplied)` so toggling portrait blur updates live.
+ * - Tracks `activeShowsPortraitOverlay` explicitly so wake recovery NEVER restores a fading-out portrait.
  */
 class BackdropRenderer(
     private val layerA: ImageView,
@@ -17,22 +22,26 @@ class BackdropRenderer(
     private val dimView: View,
 ) {
     private var showingA = true
-    private var lastRenderedId: String? = null
+    private var lastRenderKey: Pair<String, Boolean>? = null
+    private var activeShowsPortraitOverlay = false
 
     fun setDimPercent(percent: Int) {
         dimView.alpha = (percent.coerceIn(0, 60) / 100f)
     }
 
     fun render(backdrop: LoadedBackdrop, animate: Boolean = true) {
-        if (backdrop.mediaId == lastRenderedId) return
-        lastRenderedId = backdrop.mediaId
+        val showPortrait = backdrop.isPortrait && backdrop.blurredBackgroundBitmap != null
+        val renderKey = backdrop.mediaId to showPortrait
+        if (renderKey == lastRenderKey) return
+        lastRenderKey = renderKey
+        activeShowsPortraitOverlay = showPortrait
 
         val incoming = if (showingA) layerB else layerA
         val outgoing = if (showingA) layerA else layerB
         showingA = !showingA
 
-        val backgroundBmp = if (backdrop.isPortrait && backdrop.blurredBackgroundBitmap != null) {
-            backdrop.blurredBackgroundBitmap
+        val backgroundBmp = if (showPortrait) {
+            backdrop.blurredBackgroundBitmap!!
         } else {
             backdrop.primaryBitmap
         }
@@ -50,7 +59,8 @@ class BackdropRenderer(
         if (duration == 0L) {
             incoming.alpha = 1f
             outgoing.alpha = 0f
-            updatePortraitOverlay(backdrop, animate = false)
+            outgoing.setImageDrawable(null)
+            updatePortraitOverlay(backdrop, showPortrait, animate = false)
             return
         }
 
@@ -60,14 +70,15 @@ class BackdropRenderer(
             .setDuration(duration)
             .withEndAction {
                 outgoing.alpha = 0f
+                outgoing.setImageDrawable(null)
             }
             .start()
 
-        updatePortraitOverlay(backdrop, animate = true)
+        updatePortraitOverlay(backdrop, showPortrait, animate = true)
     }
 
-    private fun updatePortraitOverlay(backdrop: LoadedBackdrop, animate: Boolean) {
-        if (backdrop.isPortrait && backdrop.blurredBackgroundBitmap != null) {
+    private fun updatePortraitOverlay(backdrop: LoadedBackdrop, showPortrait: Boolean, animate: Boolean) {
+        if (showPortrait) {
             portraitForeground.setImageBitmap(backdrop.primaryBitmap)
             portraitForeground.visibility = View.VISIBLE
             if (animate) {
@@ -83,8 +94,10 @@ class BackdropRenderer(
                         .alpha(0f)
                         .setDuration(CROSSFADE_MS / 2)
                         .withEndAction {
-                            portraitForeground.visibility = View.GONE
-                            portraitForeground.setImageDrawable(null)
+                            if (!activeShowsPortraitOverlay) {
+                                portraitForeground.visibility = View.GONE
+                                portraitForeground.setImageDrawable(null)
+                            }
                         }
                         .start()
                 } else {
@@ -97,16 +110,39 @@ class BackdropRenderer(
     }
 
     /**
-     * Called on Activity resume / HDMI-CEC wake to verify neither layer got stuck mid-fade.
+     * Called on Activity resume / HDMI-CEC wake to snap both layers cleanly to their
+     * settled state derived from the currently selected backdrop.
      */
     fun ensureVisibleAfterWake() {
         val active = if (showingA) layerA else layerB
+        val inactive = if (showingA) layerB else layerA
+
         active.animate().cancel()
+        inactive.animate().cancel()
+        portraitForeground.animate().cancel()
+
         active.alpha = 1f
-        if (portraitForeground.visibility == View.VISIBLE) {
-            portraitForeground.animate().cancel()
+        inactive.alpha = 0f
+        inactive.setImageDrawable(null)
+
+        if (activeShowsPortraitOverlay) {
+            portraitForeground.visibility = View.VISIBLE
             portraitForeground.alpha = 1f
+        } else {
+            portraitForeground.visibility = View.GONE
+            portraitForeground.alpha = 0f
+            portraitForeground.setImageDrawable(null)
         }
+    }
+
+    fun releaseDrawables() {
+        layerA.animate().cancel()
+        layerB.animate().cancel()
+        portraitForeground.animate().cancel()
+        layerA.setImageDrawable(null)
+        layerB.setImageDrawable(null)
+        portraitForeground.setImageDrawable(null)
+        lastRenderKey = null
     }
 
     companion object {

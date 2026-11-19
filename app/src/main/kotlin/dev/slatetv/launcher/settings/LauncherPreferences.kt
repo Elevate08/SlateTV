@@ -12,6 +12,7 @@ data class LauncherSettings(
     val showCaption: Boolean = true,
     val backdropDimPercent: Int = 18,       // 0..60% subtle dim over photos
     val smartPortraitBlur: Boolean = true,
+    val keepScreenOn: Boolean = false,      // Opt-in for dedicated digital photo frame mode (respects OLED/Shield sleep by default)
     val showSideloadedApps: Boolean = false,
 ) {
     val rotationIntervalLabel: String
@@ -48,6 +49,7 @@ class LauncherPreferences(context: Context) {
         showCaption = prefs.getBoolean(KEY_SHOW_CAPTION, true),
         backdropDimPercent = prefs.getInt(KEY_BACKDROP_DIM, 18).coerceIn(0, 60),
         smartPortraitBlur = prefs.getBoolean(KEY_SMART_PORTRAIT, true),
+        keepScreenOn = prefs.getBoolean(KEY_KEEP_SCREEN_ON, false),
         showSideloadedApps = prefs.getBoolean(KEY_SHOW_SIDELOADED, false),
     )
 
@@ -66,6 +68,7 @@ class LauncherPreferences(context: Context) {
             .putBoolean(KEY_SHOW_CAPTION, settings.showCaption)
             .putInt(KEY_BACKDROP_DIM, settings.backdropDimPercent.coerceIn(0, 60))
             .putBoolean(KEY_SMART_PORTRAIT, settings.smartPortraitBlur)
+            .putBoolean(KEY_KEEP_SCREEN_ON, settings.keepScreenOn)
             .putBoolean(KEY_SHOW_SIDELOADED, settings.showSideloadedApps)
             .apply()
     }
@@ -79,6 +82,7 @@ class LauncherPreferences(context: Context) {
         private const val KEY_SHOW_CAPTION = "show_caption"
         private const val KEY_BACKDROP_DIM = "backdrop_dim_percent"
         private const val KEY_SMART_PORTRAIT = "smart_portrait_blur"
+        private const val KEY_KEEP_SCREEN_ON = "keep_screen_on"
         private const val KEY_SHOW_SIDELOADED = "show_sideloaded_apps"
 
         val ROTATION_OPTIONS = listOf(0, 60, 180, 300, 600, 1800)

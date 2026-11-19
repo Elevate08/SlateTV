@@ -11,27 +11,35 @@ import java.io.BufferedInputStream
 import java.io.Closeable
 import java.io.OutputStream
 import java.net.Inet4Address
+import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
+import java.util.Collections
+import java.util.concurrent.Semaphore
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Tiny, zero-dependency, on-demand local HTTP setup server for entering
+ * Hardened, zero-dependency, on-demand local HTTP setup server for entering
  * Immich URL + API key from a phone browser instead of typing with a TV remote.
  *
- * Security model:
+ * Security & resource bounds:
  * - Only runs while the Immich Phone Pairing dialog is open on the TV.
- * - Protected by a per-session cryptographically random 6-digit PIN.
- * - Rejects requests missing/mismatching the PIN with HTTP 403.
- * - Stops immediately via [close] once configured or dismissed.
+ * - Binds specifically to the LAN interface shown in the QR code.
+ * - Caps concurrent connections ([MAX_CONCURRENT_CLIENTS]), header count/bytes, body size, and request time.
+ * - Protects the 6-digit PIN with a strict attempt cap ([MAX_FAILED_PIN_ATTEMPTS]) + delay.
+ * - Single-use session: atomically consumes on the first valid submission so it cannot be overwritten.
+ * - Tracks and closes all open client sockets immediately on [close].
  */
 class LanConfigServer(
     private val initialUrl: String = "",
     private val initialAllowUntrustedTls: Boolean = false,
     private val port: Int = 0,
+    private val bindAddressOverride: InetAddress? = null,
     private val onCredentialsSubmitted: (serverUrl: String, apiKey: String, allowUntrustedTls: Boolean) -> Unit,
 ) : Closeable {
 
@@ -40,15 +48,27 @@ class LanConfigServer(
     private var serverSocket: ServerSocket? = null
     private var scope: CoroutineScope? = null
     private var acceptJob: Job? = null
+    private var boundHostDisplay: String = "127.0.0.1"
+
+    private val clientPermits = Semaphore(MAX_CONCURRENT_CLIENTS)
+    private val activeClients = Collections.synchronizedSet(mutableSetOf<Socket>())
+    private val failedPinAttempts = AtomicInteger(0)
+    private val sessionConsumed = AtomicBoolean(false)
 
     val boundPort: Int
         get() = serverSocket?.localPort ?: -1
 
     fun start(): String {
-        val socket = ServerSocket(port).apply {
-            reuseAddress = true
+        val lanIp = bindAddressOverride?.hostAddress ?: detectLocalIpv4()
+        val bindAddr = bindAddressOverride ?: lanIp?.let { runCatching { InetAddress.getByName(it) }.getOrNull() }
+        val socket = runCatching {
+            ServerSocket(port, 8, bindAddr).apply { reuseAddress = true }
+        }.getOrElse {
+            ServerSocket(port, 8).apply { reuseAddress = true }
         }
         serverSocket = socket
+        boundHostDisplay = lanIp ?: "127.0.0.1"
+
         val localScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scope = localScope
         acceptJob = localScope.launch {
@@ -58,110 +78,214 @@ class LanConfigServer(
                 } catch (_: Exception) {
                     break
                 }
-                launch { handleClient(client) }
+                if (!clientPermits.tryAcquire()) {
+                    runCatching { client.close() }
+                    continue
+                }
+                activeClients.add(client)
+                launch {
+                    try {
+                        handleClient(client)
+                    } catch (_: Exception) {
+                        // Isolate malformed client I/O errors per socket
+                    } finally {
+                        activeClients.remove(client)
+                        runCatching { client.close() }
+                        clientPermits.release()
+                    }
+                }
             }
         }
-        val ip = detectLocalIpv4() ?: "127.0.0.1"
-        return "http://$ip:${socket.localPort}/?pin=$pin"
+        return "http://$boundHostDisplay:${socket.localPort}/?pin=$pin"
     }
 
     override fun close() {
         acceptJob?.cancel()
         scope?.cancel()
         runCatching { serverSocket?.close() }
+        synchronized(activeClients) {
+            activeClients.forEach { runCatching { it.close() } }
+            activeClients.clear()
+        }
         serverSocket = null
         scope = null
         acceptJob = null
     }
 
     private fun handleClient(socket: Socket) {
-        socket.use { s ->
-            s.soTimeout = 5_000
-            val input = BufferedInputStream(s.getInputStream())
-            val output = s.getOutputStream()
+        val deadlineMs = System.currentTimeMillis() + REQUEST_DEADLINE_MS
+        socket.soTimeout = 3_000
+        val input = BufferedInputStream(socket.getInputStream())
+        val output = socket.getOutputStream()
 
-            val requestLine = readLine(input) ?: return
-            val parts = requestLine.split(" ")
-            if (parts.size < 2) {
-                writeResponse(output, 400, "text/plain", "Bad Request")
+        val requestLine = readLineBounded(input, MAX_LINE_BYTES, deadlineMs) ?: return
+        val parts = requestLine.split(" ")
+        if (parts.size < 2) {
+            writeResponse(output, 400, "text/plain", "Bad Request")
+            return
+        }
+        val method = parts[0].uppercase()
+        val rawTarget = parts[1]
+        val path = rawTarget.substringBefore('?')
+        val query = rawTarget.substringAfter('?', "")
+
+        var contentLength: Int? = null
+        var headerLines = 0
+        var totalHeaderBytes = requestLine.length
+        var hostHeader: String? = null
+        var transferEncodingChunked = false
+
+        while (true) {
+            val line = readLineBounded(input, MAX_LINE_BYTES, deadlineMs) ?: break
+            if (line.isEmpty()) break
+            headerLines++
+            totalHeaderBytes += line.length
+            if (headerLines > MAX_HEADER_LINES || totalHeaderBytes > MAX_TOTAL_HEADER_BYTES) {
+                writeResponse(output, 431, "text/plain", "Request Header Fields Too Large")
                 return
             }
-            val method = parts[0].uppercase()
-            val rawTarget = parts[1]
-            val path = rawTarget.substringBefore('?')
-            val query = rawTarget.substringAfter('?', "")
-
-            var contentLength = 0
-            while (true) {
-                val line = readLine(input) ?: break
-                if (line.isEmpty()) break
-                val colon = line.indexOf(':')
-                if (colon > 0) {
-                    val headerName = line.substring(0, colon).trim().lowercase()
-                    val headerValue = line.substring(colon + 1).trim()
-                    if (headerName == "content-length") {
-                        contentLength = headerValue.toIntOrNull()?.coerceIn(0, MAX_BODY_BYTES) ?: 0
+            val colon = line.indexOf(':')
+            if (colon > 0) {
+                val headerName = line.substring(0, colon).trim().lowercase()
+                val headerValue = line.substring(colon + 1).trim()
+                when (headerName) {
+                    "content-length" -> {
+                        val parsed = headerValue.toIntOrNull()
+                        if (parsed == null || parsed < 0 || parsed > MAX_BODY_BYTES) {
+                            writeResponse(output, 400, "text/plain", "Invalid Content-Length")
+                            return
+                        }
+                        contentLength = parsed
                     }
+                    "transfer-encoding" -> {
+                        if (headerValue.contains("chunked", ignoreCase = true)) {
+                            transferEncodingChunked = true
+                        }
+                    }
+                    "host" -> hostHeader = headerValue
                 }
             }
+        }
 
-            when {
-                method == "GET" && (path == "/" || path == "/index.html") -> {
-                    val queryParams = parseForm(query)
-                    val prefillPin = queryParams["pin"].orEmpty()
-                    writeResponse(output, 200, "text/html; charset=utf-8", renderPage(prefillPin, null))
+        if (transferEncodingChunked) {
+            writeResponse(output, 400, "text/plain", "Chunked transfer encoding not supported")
+            return
+        }
+
+        // Verify Host header matches this local pairing server (prevents DNS rebinding)
+        if (hostHeader != null && !isExpectedHost(hostHeader)) {
+            writeResponse(output, 403, "text/plain", "Forbidden Host")
+            return
+        }
+
+        if (sessionConsumed.get()) {
+            writeResponse(output, 410, "text/plain", "Pairing session already completed")
+            return
+        }
+
+        if (failedPinAttempts.get() >= MAX_FAILED_PIN_ATTEMPTS) {
+            writeResponse(output, 429, "text/plain", "Too many invalid PIN attempts. Reopen QR pairing on TV.")
+            return
+        }
+
+        when {
+            method == "GET" && (path == "/" || path == "/index.html") -> {
+                val queryParams = parseForm(query)
+                val prefillPin = queryParams["pin"].orEmpty().take(6)
+                writeResponse(output, 200, "text/html; charset=utf-8", renderPage(prefillPin, null))
+            }
+
+            method == "POST" && path == "/save" -> {
+                val expectedLen = contentLength
+                if (expectedLen == null || expectedLen <= 0) {
+                    writeResponse(output, 400, "text/plain", "Missing or invalid Content-Length")
+                    return
+                }
+                val bodyBytes = ByteArray(expectedLen)
+                var readTotal = 0
+                while (readTotal < expectedLen) {
+                    if (System.currentTimeMillis() > deadlineMs) {
+                        writeResponse(output, 408, "text/plain", "Request Timeout")
+                        return
+                    }
+                    val n = input.read(bodyBytes, readTotal, expectedLen - readTotal)
+                    if (n <= 0) break
+                    readTotal += n
+                }
+                if (readTotal != expectedLen) {
+                    writeResponse(output, 400, "text/plain", "Incomplete request body")
+                    return
                 }
 
-                method == "POST" && path == "/save" -> {
-                    val bodyBytes = ByteArray(contentLength)
-                    var readTotal = 0
-                    while (readTotal < contentLength) {
-                        val n = input.read(bodyBytes, readTotal, contentLength - readTotal)
-                        if (n <= 0) break
-                        readTotal += n
-                    }
-                    val form = parseForm(String(bodyBytes, 0, readTotal, StandardCharsets.UTF_8))
-                    val submittedPin = form["pin"]?.trim().orEmpty()
-                    if (submittedPin != pin) {
+                val form = parseForm(String(bodyBytes, 0, readTotal, StandardCharsets.UTF_8))
+                val submittedPin = form["pin"]?.trim().orEmpty()
+                if (submittedPin != pin) {
+                    val attempts = failedPinAttempts.incrementAndGet()
+                    Thread.sleep(250L)
+                    if (attempts >= MAX_FAILED_PIN_ATTEMPTS) {
+                        writeResponse(
+                            output,
+                            429,
+                            "text/html; charset=utf-8",
+                            renderPage("", "Too many wrong PIN attempts. Close and reopen Phone Pairing on your TV."),
+                        )
+                    } else {
                         writeResponse(
                             output,
                             403,
                             "text/html; charset=utf-8",
-                            renderPage("", "Invalid pairing PIN. Check the 6-digit code shown on your TV."),
+                            renderPage("", "Invalid pairing PIN (${MAX_FAILED_PIN_ATTEMPTS - attempts} attempts remaining)."),
                         )
-                        return
                     }
-                    val serverUrl = ImmichConfig.normalizeUrl(form["serverUrl"].orEmpty())
-                    val apiKey = form["apiKey"]?.trim().orEmpty()
-                    val allowUntrusted = form["allowUntrustedTls"] == "on" || form["allowUntrustedTls"] == "true"
-
-                    if (serverUrl.isBlank() || apiKey.isBlank()) {
-                        writeResponse(
-                            output,
-                            400,
-                            "text/html; charset=utf-8",
-                            renderPage(submittedPin, "Both Server URL and API Key are required."),
-                        )
-                        return
-                    }
-
-                    onCredentialsSubmitted(serverUrl, apiKey, allowUntrusted)
-                    writeResponse(output, 200, "text/html; charset=utf-8", renderSuccessPage(serverUrl))
+                    return
                 }
 
-                else -> writeResponse(output, 404, "text/plain", "Not Found")
+                val serverUrl = ImmichConfig.normalizeUrl(form["serverUrl"].orEmpty())
+                val apiKey = form["apiKey"]?.trim().orEmpty()
+                val allowUntrusted = form["allowUntrustedTls"] == "on" || form["allowUntrustedTls"] == "true"
+
+                if (serverUrl.isBlank() || apiKey.isBlank()) {
+                    writeResponse(
+                        output,
+                        400,
+                        "text/html; charset=utf-8",
+                        renderPage(submittedPin, "Both Server URL and API Key are required."),
+                    )
+                    return
+                }
+
+                if (!sessionConsumed.compareAndSet(false, true)) {
+                    writeResponse(output, 410, "text/plain", "Pairing session already completed")
+                    return
+                }
+
+                onCredentialsSubmitted(serverUrl, apiKey, allowUntrusted)
+                writeResponse(output, 200, "text/html; charset=utf-8", renderSuccessPage(serverUrl))
             }
+
+            else -> writeResponse(output, 404, "text/plain", "Not Found")
         }
     }
 
-    private fun readLine(input: BufferedInputStream): String? {
+    private fun isExpectedHost(hostHeader: String): Boolean {
+        val cleaned = hostHeader.trim().lowercase()
+        val expected = "$boundHostDisplay:$boundPort".lowercase()
+        return cleaned == expected ||
+            cleaned == "127.0.0.1:$boundPort" ||
+            cleaned == "localhost:$boundPort"
+    }
+
+    private fun readLineBounded(input: BufferedInputStream, maxBytes: Int, deadlineMs: Long): String? {
         val sb = StringBuilder()
         while (true) {
+            if (System.currentTimeMillis() > deadlineMs) return null
             val b = input.read()
             if (b == -1) return if (sb.isEmpty()) null else sb.toString()
             if (b == '\n'.code) break
-            if (b != '\r'.code) sb.append(b.toChar())
-            if (sb.length > 8192) break
+            if (b != '\r'.code) {
+                sb.append(b.toChar())
+                if (sb.length > maxBytes) return null
+            }
         }
         return sb.toString()
     }
@@ -172,8 +296,8 @@ class LanConfigServer(
             for (pair in raw.split('&')) {
                 val idx = pair.indexOf('=')
                 if (idx > 0) {
-                    val key = URLDecoder.decode(pair.substring(0, idx), "UTF-8")
-                    val value = URLDecoder.decode(pair.substring(idx + 1), "UTF-8")
+                    val key = runCatching { URLDecoder.decode(pair.substring(0, idx), "UTF-8") }.getOrNull() ?: continue
+                    val value = runCatching { URLDecoder.decode(pair.substring(idx + 1), "UTF-8") }.getOrNull() ?: continue
                     put(key, value)
                 }
             }
@@ -186,6 +310,10 @@ class LanConfigServer(
             400 -> "Bad Request"
             403 -> "Forbidden"
             404 -> "Not Found"
+            408 -> "Request Timeout"
+            410 -> "Gone"
+            429 -> "Too Many Requests"
+            431 -> "Request Header Fields Too Large"
             else -> "Error"
         }
         val bodyBytes = body.toByteArray(StandardCharsets.UTF_8)
@@ -271,7 +399,7 @@ class LanConfigServer(
         <head>
           <meta charset="utf-8"/>
           <meta name="viewport" content="width=device-width,initial-scale=1"/>
-          <title>Slate TV · Connected</title>
+          <title>Slate TV · Sent</title>
           <style>
             body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                    background: #0a0d12; color: #f1f5f9; margin: 0; padding: 24px; }
@@ -284,7 +412,7 @@ class LanConfigServer(
         <body>
           <div class="card">
             <h1>Sent to your TV</h1>
-            <p>Slate TV received your Immich configuration for <strong>${escapeHtml(serverUrl)}</strong>. You can close this tab and pick your albums on the TV.</p>
+            <p>Slate TV received your Immich credentials for <strong>${escapeHtml(serverUrl)}</strong>. Select <strong>Save &amp; Activate</strong> on your TV to finish.</p>
           </div>
         </body>
         </html>
@@ -292,22 +420,39 @@ class LanConfigServer(
 
     companion object {
         private const val MAX_BODY_BYTES = 16 * 1024
+        private const val MAX_LINE_BYTES = 2048
+        private const val MAX_HEADER_LINES = 64
+        private const val MAX_TOTAL_HEADER_BYTES = 8 * 1024
+        private const val MAX_CONCURRENT_CLIENTS = 4
+        private const val REQUEST_DEADLINE_MS = 5_000L
+        const val MAX_FAILED_PIN_ATTEMPTS = 5
+
+        private val VIRTUAL_OR_VPN_PREFIXES = listOf("tun", "tap", "wg", "tailscale", "docker", "br-", "veth", "virbr")
 
         fun detectLocalIpv4(): String? {
             return runCatching {
                 val interfaces = NetworkInterface.getNetworkInterfaces() ?: return null
-                var fallback: String? = null
+                var preferredLan: String? = null
+                var fallbackLan: String? = null
                 for (iface in interfaces.toList()) {
                     if (!iface.isUp || iface.isLoopback || iface.isVirtual) continue
+                    val name = iface.name.lowercase()
+                    val isVpnOrVirtual = VIRTUAL_OR_VPN_PREFIXES.any { name.startsWith(it) }
                     for (addr in iface.inetAddresses.toList()) {
-                        if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                        if (addr is Inet4Address && !addr.isLoopbackAddress && addr.isSiteLocalAddress) {
                             val ip = addr.hostAddress ?: continue
-                            if (addr.isSiteLocalAddress) return ip
-                            if (fallback == null) fallback = ip
+                            if (!isVpnOrVirtual && (name.startsWith("eth") || name.startsWith("wlan") || name.startsWith("en"))) {
+                                return ip
+                            }
+                            if (!isVpnOrVirtual && preferredLan == null) {
+                                preferredLan = ip
+                            } else if (fallbackLan == null) {
+                                fallbackLan = ip
+                            }
                         }
                     }
                 }
-                fallback
+                preferredLan ?: fallbackLan
             }.getOrNull()
         }
     }

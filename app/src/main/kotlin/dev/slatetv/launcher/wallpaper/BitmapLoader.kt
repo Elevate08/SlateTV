@@ -13,8 +13,11 @@ import android.net.Uri
 import androidx.exifinterface.media.ExifInterface
 import dev.slatetv.plugin.api.BackgroundMedia
 import dev.slatetv.plugin.immich.ImmichApiClient
+import dev.slatetv.plugin.immich.ImmichApiClient.Companion.executeCancellable
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -27,22 +30,45 @@ data class LoadedBackdrop(
     val blurredBackgroundBitmap: Bitmap?,
     val subtitle: String?,
     val isPortrait: Boolean,
+    val smartPortraitBlurApplied: Boolean = blurredBackgroundBitmap != null,
 )
 
 /**
- * Memory-safe, EXIF-aware bitmap loader + fast portrait backdrop blurrer.
+ * Memory-safe, streaming, EXIF-aware bitmap loader + fast portrait backdrop blurrer.
  *
- * Designed specifically for 3GB Nvidia Shield TV hardware:
- * - Always bounds decoded dimensions to display resolution (max 1920x1080 by default).
- * - Uses RGB_565 for opaque backgrounds where possible (50% less RAM than ARGB_8888!).
- * - Zero RenderScript usage (pure Kotlin StackBlur on a tiny 96x54 thumbnail < 1ms).
+ * Designed specifically for 3 GB NVIDIA Shield TV hardware:
+ * - Streams HTTP/content inputs directly to disk with a strict 16 MB cap (never buffers raw bytes in RAM).
+ * - Decodes ARGB_8888 (smooth 24-bit color with zero sky banding) bounded by BOTH display
+ *   dimensions AND a 4.5M pixel ceiling so wide panoramas cannot cause OOM.
+ * - Automatically invalidates corrupt/unparseable cache entries so bad responses are never stuck.
+ * - Handles all EXIF orientations (1–8 including transpose/transverse) and recycles intermediates.
  */
 class BitmapLoader(
     private val context: Context,
     private val diskCache: WallpaperDiskCache,
-    private val standardHttp: OkHttpClient = ImmichApiClient.defaultClient(allowUntrustedTls = false),
-    private val untrustedHttp: OkHttpClient = ImmichApiClient.defaultClient(allowUntrustedTls = true),
+    private val baseHttp: OkHttpClient = ImmichApiClient.defaultClient(allowUntrustedTls = false),
 ) {
+    @Volatile
+    private var cachedUntrustedHost: String? = null
+
+    @Volatile
+    private var cachedUntrustedHttp: OkHttpClient? = null
+
+    private fun httpClientFor(urlHost: String, allowUntrustedTls: Boolean): OkHttpClient {
+        if (!allowUntrustedTls) return baseHttp
+        val normalizedHost = urlHost.lowercase()
+        val existing = cachedUntrustedHttp
+        if (existing != null && cachedUntrustedHost == normalizedHost) return existing
+        val created = ImmichApiClient.defaultClient(
+            allowUntrustedTls = true,
+            allowedHost = normalizedHost,
+            baseClient = baseHttp,
+        )
+        cachedUntrustedHost = normalizedHost
+        cachedUntrustedHttp = created
+        return created
+    }
+
     suspend fun load(
         media: BackgroundMedia,
         targetWidth: Int,
@@ -50,53 +76,81 @@ class BitmapLoader(
         smartPortraitBlur: Boolean,
     ): LoadedBackdrop? = withContext(Dispatchers.IO) {
         val uri = media.imageUri
-        when {
-            uri.startsWith("ambient://") -> {
-                val bmp = renderAmbientGradient(uri, targetWidth.coerceIn(320, 1280), targetHeight.coerceIn(180, 720))
-                LoadedBackdrop(
-                    mediaId = media.id,
-                    primaryBitmap = bmp,
-                    blurredBackgroundBitmap = null,
-                    subtitle = media.subtitle,
-                    isPortrait = false,
-                )
-            }
+        try {
+            when {
+                uri.startsWith("ambient://") -> {
+                    val bmp = renderAmbientGradient(uri, targetWidth.coerceIn(320, 1280), targetHeight.coerceIn(180, 720))
+                    LoadedBackdrop(
+                        mediaId = media.id,
+                        primaryBitmap = bmp,
+                        blurredBackgroundBitmap = null,
+                        subtitle = media.subtitle,
+                        isPortrait = false,
+                        smartPortraitBlurApplied = false,
+                    )
+                }
 
-            uri.startsWith("http://") || uri.startsWith("https://") -> {
-                val cached = diskCache.get(media.id) ?: downloadToCache(media) ?: return@withContext null
-                decodeFileToBackdrop(cached, targetWidth, targetHeight, smartPortraitBlur)
-            }
+                uri.startsWith("http://") || uri.startsWith("https://") -> {
+                    val cacheKey = cacheKeyFor(media)
+                    val cached = diskCache.get(cacheKey)
+                    if (cached != null) {
+                        val decoded = decodeFileToBackdrop(cached, targetWidth, targetHeight, smartPortraitBlur)
+                        if (decoded != null) return@withContext decoded
+                        // Invalidate corrupt cache entry and try one fresh download
+                        diskCache.remove(cacheKey)
+                    }
+                    val fresh = downloadToCache(media.copy(id = cacheKey)) ?: return@withContext null
+                    val decoded = decodeFileToBackdrop(fresh, targetWidth, targetHeight, smartPortraitBlur)
+                    if (decoded == null) {
+                        diskCache.remove(cacheKey)
+                    }
+                    decoded
+                }
 
-            uri.startsWith("file://") -> {
-                val file = runCatching { File(java.net.URI(uri)) }.getOrNull() ?: return@withContext null
-                if (!file.exists()) return@withContext null
-                val entry = WallpaperDiskCache.CachedEntry(
-                    mediaId = media.id,
-                    imageFile = file,
-                    subtitle = media.subtitle,
-                    width = media.width,
-                    height = media.height,
-                )
-                decodeFileToBackdrop(entry, targetWidth, targetHeight, smartPortraitBlur)
-            }
+                uri.startsWith("file://") -> {
+                    val file = runCatching { File(java.net.URI(uri)) }.getOrNull() ?: return@withContext null
+                    if (!file.exists()) return@withContext null
+                    val entry = WallpaperDiskCache.CachedEntry(
+                        mediaId = media.id,
+                        imageFile = file,
+                        subtitle = media.subtitle,
+                        width = media.width,
+                        height = media.height,
+                    )
+                    decodeFileToBackdrop(entry, targetWidth, targetHeight, smartPortraitBlur)
+                }
 
-            uri.startsWith("content://") -> {
-                val bytes = runCatching {
-                    context.contentResolver.openInputStream(Uri.parse(uri))?.use { it.readBytes() }
-                }.getOrNull() ?: return@withContext null
-                val cached = diskCache.put(media, bytes)
-                decodeFileToBackdrop(cached, targetWidth, targetHeight, smartPortraitBlur)
-            }
+                uri.startsWith("content://") -> {
+                    val cacheKey = cacheKeyFor(media)
+                    val cached = context.contentResolver.openInputStream(Uri.parse(uri))?.use { stream ->
+                        diskCache.putStream(media.copy(id = cacheKey), stream, MAX_DOWNLOAD_BYTES)
+                    } ?: return@withContext null
+                    val decoded = decodeFileToBackdrop(cached, targetWidth, targetHeight, smartPortraitBlur)
+                    if (decoded == null) diskCache.remove(cacheKey)
+                    decoded
+                }
 
-            else -> null
+                else -> null
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
         }
     }
 
     suspend fun prefetchToDisk(media: BackgroundMedia): Boolean = withContext(Dispatchers.IO) {
         val uri = media.imageUri
         if (!uri.startsWith("http://") && !uri.startsWith("https://")) return@withContext true
-        if (diskCache.get(media.id) != null) return@withContext true
-        downloadToCache(media) != null
+        val cacheKey = cacheKeyFor(media)
+        if (diskCache.get(cacheKey) != null) return@withContext true
+        try {
+            downloadToCache(media.copy(id = cacheKey)) != null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
     }
 
     suspend fun loadCachedEntry(
@@ -105,21 +159,47 @@ class BitmapLoader(
         targetHeight: Int,
         smartPortraitBlur: Boolean,
     ): LoadedBackdrop? = withContext(Dispatchers.IO) {
-        decodeFileToBackdrop(entry, targetWidth, targetHeight, smartPortraitBlur)
+        val decoded = runCatching {
+            decodeFileToBackdrop(entry, targetWidth, targetHeight, smartPortraitBlur)
+        }.getOrNull()
+        if (decoded == null) {
+            diskCache.remove(entry.mediaId)
+        }
+        decoded
     }
 
-    private fun downloadToCache(media: BackgroundMedia): WallpaperDiskCache.CachedEntry? {
-        val client = if (media.allowUntrustedTls) untrustedHttp else standardHttp
-        val reqBuilder = Request.Builder().url(media.imageUri).get()
-        media.headers.forEach { (k, v) -> reqBuilder.header(k, v) }
-        return runCatching {
-            client.newCall(reqBuilder.build()).execute().use { resp ->
-                if (!resp.isSuccessful) return null
-                val bytes = resp.body?.bytes() ?: return null
-                if (bytes.isEmpty()) return null
-                diskCache.put(media, bytes)
+    fun cacheKeyFor(media: BackgroundMedia): String = "${media.id}|${media.imageUri}"
+
+    private suspend fun downloadToCache(media: BackgroundMedia): WallpaperDiskCache.CachedEntry? {
+        val parsedUrl = media.imageUri.toHttpUrlOrNull() ?: return null
+        val client = httpClientFor(parsedUrl.host, media.allowUntrustedTls)
+        val reqBuilder = Request.Builder().url(parsedUrl).get()
+        media.headers.forEach { (k, v) ->
+            // Sanitize header keys/values to prevent IllegalArgumentException from untrusted plugins
+            if (isValidHeader(k, v)) {
+                reqBuilder.header(k, v)
             }
-        }.getOrNull()
+        }
+        return try {
+            client.executeCancellable(reqBuilder.build()).use { resp ->
+                if (!resp.isSuccessful) return null
+                val contentLength = resp.body?.contentLength() ?: -1L
+                if (contentLength > MAX_DOWNLOAD_BYTES) return null
+                val stream = resp.body?.byteStream() ?: return null
+                diskCache.putStream(media, stream, MAX_DOWNLOAD_BYTES)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun isValidHeader(name: String, value: String): Boolean {
+        if (name.isBlank() || name.length > 128 || value.length > 4096) return false
+        if (name.any { it <= '\u0020' || it >= '\u007f' }) return false
+        if (value.any { it == '\r' || it == '\n' || it == '\u0000' }) return false
+        return true
     }
 
     private fun decodeFileToBackdrop(
@@ -158,6 +238,7 @@ class BitmapLoader(
             blurredBackgroundBitmap = blurred,
             subtitle = entry.subtitle,
             isPortrait = isPortrait,
+            smartPortraitBlurApplied = blurred != null,
         )
     }
 
@@ -176,6 +257,14 @@ class BitmapLoader(
             ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
             ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
             ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                matrix.postRotate(90f)
+                matrix.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                matrix.postRotate(270f)
+                matrix.postScale(-1f, 1f)
+            }
             else -> return bitmap
         }
         val rotated = runCatching {
@@ -217,6 +306,9 @@ class BitmapLoader(
     }
 
     companion object {
+        const val MAX_DOWNLOAD_BYTES = 16L * 1024L * 1024L
+        private const val MAX_DECODED_PIXELS = 4_500_000L // ~18 MB ARGB_8888 ceiling even for panoramas
+
         internal fun calculateInSampleSize(srcW: Int, srcH: Int, reqW: Int, reqH: Int): Int {
             var inSampleSize = 1
             if (srcH > reqH || srcW > reqW) {
@@ -226,20 +318,30 @@ class BitmapLoader(
                     inSampleSize *= 2
                 }
             }
+            // Also enforce total pixel budget for extreme panoramic or tall aspect ratios
+            while (((srcW.toLong() / inSampleSize) * (srcH.toLong() / inSampleSize)) > MAX_DECODED_PIXELS) {
+                inSampleSize *= 2
+            }
             return inSampleSize.coerceAtLeast(1)
         }
 
         /**
-         * Fast 3-pass box blur on a small 96px thumbnail for tasteful portrait pillarboxing.
-         * Runs in < 1ms and allocates ~20 KB of RAM.
+         * Fast 2-pass box blur on a tiny 96px thumbnail for tasteful portrait pillarboxing.
+         * Runs in < 1ms and properly recycles intermediate allocations.
          */
         fun createFastBlurredCopy(source: Bitmap): Bitmap {
             val tinyW = 96
             val tinyH = max(54, (tinyW * source.height) / max(1, source.width)).coerceAtMost(128)
             val scaled = Bitmap.createScaledBitmap(source, tinyW, tinyH, true)
-                .copy(Bitmap.Config.ARGB_8888, true)
-            boxBlurInPlace(scaled, radius = 6, passes = 2)
-            return scaled
+            val mutable = if (scaled.config == Bitmap.Config.ARGB_8888 && scaled.isMutable) {
+                scaled
+            } else {
+                val copy = scaled.copy(Bitmap.Config.ARGB_8888, true)
+                if (scaled !== source) scaled.recycle()
+                copy
+            }
+            boxBlurInPlace(mutable, radius = 6, passes = 2)
+            return mutable
         }
 
         private fun boxBlurInPlace(bitmap: Bitmap, radius: Int, passes: Int) {
@@ -250,7 +352,6 @@ class BitmapLoader(
             bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
 
             repeat(passes) {
-                // Horizontal pass
                 for (y in 0 until h) {
                     val row = y * w
                     for (x in 0 until w) {
@@ -269,7 +370,6 @@ class BitmapLoader(
                         temp[row + x] = (0xFF shl 24) or ((r / count) shl 16) or ((g / count) shl 8) or (b / count)
                     }
                 }
-                // Vertical pass
                 for (x in 0 until w) {
                     for (y in 0 until h) {
                         var r = 0

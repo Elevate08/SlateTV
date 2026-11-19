@@ -8,17 +8,14 @@ import dev.slatetv.plugin.api.ISlateBackgroundPlugin
 import dev.slatetv.plugin.api.PluginContract
 import dev.slatetv.plugin.api.PluginInfo
 import dev.slatetv.plugin.api.PluginMediaItem
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Reference external APK background plugin demonstrating Slate TV's AIDL contract.
  *
- * Returns `ambient://` palette URIs (or could return authenticated HTTP URLs
- * with `headers` Bundle entries, or `content://` FileProvider URIs).
+ * Advances deterministically from [PluginContract.OPT_LAST_MEDIA_ID] so rotation
+ * remains predictable even though Slate TV unbinds the service between fetches.
  */
 class SampleExternalPluginService : Service() {
-
-    private val cursor = AtomicInteger(0)
 
     private val palettes = listOf(
         Triple("nordic-fjord", "ambient://#0B1622,#132A3E,#080D14", "Nordic Fjord"),
@@ -40,8 +37,10 @@ class SampleExternalPluginService : Service() {
         )
 
         override fun getNextMedia(options: Bundle?): PluginMediaItem {
-            val idx = Math.floorMod(cursor.getAndIncrement(), palettes.size)
-            val (id, uri, subtitle) = palettes[idx]
+            val lastId = options?.getString(PluginContract.OPT_LAST_MEDIA_ID)
+            val prevIdx = palettes.indexOfFirst { it.first == lastId }
+            val nextIdx = if (prevIdx == -1) 0 else (prevIdx + 1) % palettes.size
+            val (id, uri, subtitle) = palettes[nextIdx]
             return PluginMediaItem(
                 id = id,
                 imageUri = uri,
@@ -54,7 +53,20 @@ class SampleExternalPluginService : Service() {
 
         override fun getMediaBatch(count: Int, options: Bundle?): MutableList<PluginMediaItem> {
             val n = count.coerceIn(1, palettes.size)
-            return MutableList(n) { getNextMedia(options) }
+            val lastId = options?.getString(PluginContract.OPT_LAST_MEDIA_ID)
+            val prevIdx = palettes.indexOfFirst { it.first == lastId }
+            val startIdx = if (prevIdx == -1) 0 else (prevIdx + 1) % palettes.size
+            return MutableList(n) { offset ->
+                val (id, uri, subtitle) = palettes[(startIdx + offset) % palettes.size]
+                PluginMediaItem(
+                    id = id,
+                    imageUri = uri,
+                    title = null,
+                    subtitle = subtitle,
+                    width = 1920,
+                    height = 1080,
+                )
+            }
         }
     }
 

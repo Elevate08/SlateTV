@@ -1,6 +1,7 @@
 package dev.slatetv.launcher
 
 import android.app.Application
+import android.util.Log
 import dev.slatetv.launcher.apps.AppRepository
 import dev.slatetv.launcher.apps.DockPreferences
 import dev.slatetv.launcher.settings.LauncherPreferences
@@ -13,15 +14,23 @@ import dev.slatetv.launcher.wallpaper.plugins.PluginRegistry
 import dev.slatetv.plugin.immich.ImmichApiClient
 import dev.slatetv.plugin.immich.ImmichBackgroundPlugin
 import dev.slatetv.plugin.immich.SharedPrefsImmichConfigStore
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import okhttp3.OkHttpClient
 import java.io.File
 
 class SlateApplication : Application() {
 
-    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Log.e("SlateTV", "Contained uncaught launcher coroutine error", throwable)
+    }
 
+    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + exceptionHandler)
+
+    lateinit var sharedHttpClient: OkHttpClient
+        private set
     lateinit var launcherPreferences: LauncherPreferences
         private set
     lateinit var dockPreferences: DockPreferences
@@ -45,11 +54,13 @@ class SlateApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Share a single OkHttp connection/dispatcher pool across API & image loading
+        sharedHttpClient = ImmichApiClient.defaultClient(allowUntrustedTls = false)
         launcherPreferences = LauncherPreferences(this)
         dockPreferences = DockPreferences(this)
         appRepository = AppRepository(this)
         immichConfigStore = SharedPrefsImmichConfigStore(this)
-        immichApiClient = ImmichApiClient()
+        immichApiClient = ImmichApiClient(sharedHttpClient)
         immichPlugin = ImmichBackgroundPlugin(immichConfigStore, immichApiClient)
 
         pluginRegistry = PluginRegistry(
@@ -62,7 +73,7 @@ class SlateApplication : Application() {
         }
 
         diskCache = WallpaperDiskCache(File(cacheDir, "wallpapers"))
-        bitmapLoader = BitmapLoader(this, diskCache)
+        bitmapLoader = BitmapLoader(this, diskCache, sharedHttpClient)
         wallpaperManager = WallpaperManager(
             scope = appScope,
             pluginRegistry = pluginRegistry,

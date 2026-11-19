@@ -9,6 +9,7 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.hardware.display.DisplayManager
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.Uri
@@ -19,6 +20,7 @@ import android.provider.Settings
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -71,6 +73,7 @@ class HomeActivity : AppCompatActivity() {
     private var currentSettings: LauncherSettings = LauncherSettings()
     private var isIdleGalleryMode = false
     private var wallpaperCollectJob: Job? = null
+    private var reloadAppsJob: Job? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val enterIdleRunnable = Runnable { enterIdleGalleryMode() }
@@ -84,6 +87,14 @@ class HomeActivity : AppCompatActivity() {
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
+            runOnUiThread {
+                offlineBadge.visibility = View.GONE
+                app.wallpaperManager.onNetworkRestored()
+            }
+        }
+
+        override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+            // Fires once DHCP/LAN routing finishes after Shield wake-up
             runOnUiThread {
                 offlineBadge.visibility = View.GONE
                 app.wallpaperManager.onNetworkRestored()
@@ -174,7 +185,9 @@ class HomeActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         wallpaperCollectJob?.cancel()
+        reloadAppsJob?.cancel()
         mainHandler.removeCallbacks(enterIdleRunnable)
+        backdropRenderer.releaseDrawables()
         unregisterSystemObservers()
     }
 
@@ -200,7 +213,7 @@ class HomeActivity : AppCompatActivity() {
                 }
 
                 KeyEvent.KEYCODE_DPAD_UP -> {
-                    if (!allAppsController.isVisible && !settingsController.isVisible) {
+                    if (event.repeatCount == 0 && !allAppsController.isVisible && !settingsController.isVisible) {
                         enterIdleGalleryMode()
                         return true
                     }
@@ -272,6 +285,7 @@ class HomeActivity : AppCompatActivity() {
             app.wallpaperManager.requestNext(forceFresh = true)
         }
         configurePill(btnSettings, "Settings") {
+            hudContainer.visibility = View.INVISIBLE
             settingsController.open(app.wallpaperManager.state.value.lastSyncStatus)
         }
     }
@@ -322,7 +336,10 @@ class HomeActivity : AppCompatActivity() {
                 app.diskCache.clear()
                 Toast.makeText(this, "Photo cache cleared", Toast.LENGTH_SHORT).show()
             },
-            onClosed = { ensureValidFocus() },
+            onClosed = {
+                hudContainer.visibility = View.VISIBLE
+                ensureValidFocus()
+            },
         )
     }
 
@@ -370,12 +387,19 @@ class HomeActivity : AppCompatActivity() {
         val currentSubtitle = app.wallpaperManager.state.value.backdrop?.subtitle
         photoCaptionText.visibility =
             if (settings.showCaption && !currentSubtitle.isNullOrBlank()) View.VISIBLE else View.GONE
+        if (settings.keepScreenOn) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
         resetIdleTimer()
     }
 
     private fun reloadApps() {
-        app.appScope.launch {
+        reloadAppsJob?.cancel()
+        reloadAppsJob = app.appScope.launch {
             val loaded = app.appRepository.loadInstalledApps(currentSettings.showSideloadedApps)
+            if (isDestroyed || isFinishing) return@launch
             allInstalledApps = loaded
             app.dockPreferences.seedDefaultsIfNeeded(loaded.map { it.packageName })
 
