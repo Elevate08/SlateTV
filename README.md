@@ -34,8 +34,8 @@ Slate TV discovers companion plugin APKs automatically via Android's `PackageMan
 | :--- | :--- | :--- | :---: |
 | **`:app`** | `com.stasisstate.slatetv` | Core Android TV launcher host (Ambient Slate + Local Photos built-in; hosts external background and home-shelf plugin APKs) | ~1.3 MB |
 | **`:plugin-api`** | `com.stasisstate.slatetv.plugin.api` | Versioned AIDL interfaces (`ISlateBackgroundPlugin`, `ISlateShelfPlugin`) | Library |
-| **`:plugin-immich`** | `com.stasisstate.slatetv.plugin.immich` | Standalone photo-server background plugin APK (header auth, QR phone pairing, album/favorites/recent/random modes) | ~287 KB |
-| **`:plugin-jellyfin`** | `com.stasisstate.slatetv.plugin.jellyfin` | Standalone Live TV & EPG guide home-shelf plugin APK (auto-hides when Live TV is unavailable) | ~919 KB |
+| **`:plugin-immich`** | `com.stasisstate.slatetv.plugin.immich` | Standalone photo-server background plugin APK (LAN discovery, direct sign-in, QR phone pairing, hidden from All Apps) | ~298 KB |
+| **`:plugin-jellyfin`** | `com.stasisstate.slatetv.plugin.jellyfin` | Standalone Live TV & EPG guide home-shelf plugin APK (zero-login System Live Channels + optional server discovery & Quick Connect, hidden from All Apps) | ~940 KB |
 | **`:plugin-sample-external`** | `com.stasisstate.slatetv.plugin.sample` | Minimal reference external background plugin APK | Sample |
 
 ---
@@ -56,7 +56,7 @@ Slate TV discovers companion plugin APKs automatically via Android's `PackageMan
 | :--- | :--- |
 | **D-Pad Left / Right** | Navigate pinned dock apps, Home Shelf cards, header actions, and action pills (`Apps`, `Next`, `Settings`) |
 | **OK / Center** | Launch app, open shelf item or guide, or trigger focused action |
-| **Hold OK** or **Menu** | Context menu (Move Left/Right, Pin/Unpin, Hide, App Info) |
+| **Hold OK** or **Menu** | Context menu (**Move / Reorder** continuous D-Pad sliding, Pin/Unpin, Hide, App Info) |
 | **D-Pad Up** (from Dock) | Focuses the Home Shelf if visible → **Up** again moves to shelf header (`Full Guide` / `Next Shelf`) → **Up** again enters distraction-free Gallery Mode |
 | **D-Pad Down** (from Shelf) | Moves from shelf header → shelf cards → bottom app dock |
 | **Any Key** (in Gallery Mode) | Restores dock & HUD immediately |
@@ -69,7 +69,7 @@ Slate TV discovers companion plugin APKs automatically via Android's `PackageMan
 Requires JDK 17 or 21 and Android SDK (API 36). Optional release signing reads untracked `keystore.properties`; debug builds require no credentials.
 
 ```bash
-# Run all unit tests across all modules (112 tests)
+# Run all unit tests across all modules (162 tests)
 ./gradlew testDebugUnitTest
 
 # Build all Debug APKs

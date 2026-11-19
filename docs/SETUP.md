@@ -26,24 +26,25 @@ adb install -r plugin-jellyfin/build/outputs/apk/debug/plugin-jellyfin-debug.apk
 
 ## 2. Configure Optional Companion Plugins
 
-Companion plugins support **on-demand LAN QR Code pairing** (single-use, 6-digit PIN rate-limited) so you can enter your server details from a phone browser instead of typing with a TV remote:
+Companion plugins run as background/shelf extensions and stay hidden from your Android TV app drawer so your launcher stays uncluttered. Configure them directly from inside Slate TV:
 
-- **Background plugins:** Open **Slate TV Settings → Background Plugin**, select an installed plugin, then choose **Configure…** (or launch the plugin directly from **All Apps**).
-- **Home shelf plugins:** Open **Slate TV Settings → Home Shelves**, toggle the shelf on/off, or choose **Configure…**. If a shelf source is unconfigured or unavailable, Slate TV automatically keeps the shelf hidden so your home screen stays uncluttered.
+- **Background plugins:** Open **Slate TV Settings → Background Plugin**, select an installed plugin, then choose **Configure…** (supports LAN auto-discovery, direct sign-in, or on-demand LAN QR code pairing).
+- **Home shelf plugins:** Open **Slate TV Settings → Home Shelves**, toggle the shelf on/off, or choose **Configure…**. Live TV channels can be read directly from Android TV's system Live Channels EPG (no login required, after granting `READ_TV_LISTINGS`), or optionally paired with a media server via LAN discovery and Quick Connect. If a shelf source is unconfigured or unavailable, Slate TV automatically keeps the shelf hidden.
 
 ---
 
 ## 3. Setting Slate TV as Default Home Launcher
 
-1. If you previously used another custom launcher that relied on an Accessibility Service, disable that Accessibility Service first under **Android TV Settings > Device Preferences > Accessibility**.
-2. Verify Slate TV opens cleanly before replacing your default Home launcher:
+1. **In-App (Recommended):** Open **Slate TV Settings → APPS & SYSTEM → Default Home Launcher** and choose **Set Slate TV as Default Home** (uses Android's system Home role picker / Default Home Apps settings).
+2. **If you previously used an Accessibility-based launcher:** Disable its Accessibility Service under **Android TV Settings > Device Preferences > Accessibility**.
+3. **Optional ADB Fallback** (for Android TV builds that hide the system Home picker or lock the stock launcher):
    ```bash
+   # Verify Slate TV opens cleanly first
    adb shell monkey -p com.stasisstate.slatetv -c android.intent.category.LEANBACK_LAUNCHER 1
-   ```
-3. Set Slate TV as your default Home launcher (no Accessibility Service needed):
-   ```bash
-   adb shell pm disable-user --user 0 com.google.android.tvlauncher
+
+   # Set Slate TV as default Home activity (and optionally disable the stock launcher for user 0)
    adb shell cmd package set-home-activity com.stasisstate.slatetv/.ui.HomeActivity
+   adb shell pm disable-user --user 0 com.google.android.tvlauncher
    ```
 
 ### Instant Rollback (Re-enable Stock Android TV Launcher)
