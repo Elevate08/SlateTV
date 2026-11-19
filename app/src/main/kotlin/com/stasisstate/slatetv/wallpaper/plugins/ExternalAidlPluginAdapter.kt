@@ -14,6 +14,7 @@ import com.stasisstate.slatetv.plugin.api.PluginMetadata
 import com.stasisstate.slatetv.plugin.api.PluginRequestContext
 import com.stasisstate.slatetv.shelf.sanitizeHeaders
 import com.stasisstate.slatetv.shelf.sanitizeImageUri
+import com.stasisstate.slatetv.shelf.verifyProviderOwnedByPackage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -67,7 +68,10 @@ class ExternalAidlPluginAdapter(
         val safeUri = if (uri.startsWith("ambient://")) {
             uri
         } else {
-            sanitizeImageUri(uri, serviceComponent.packageName) ?: return null
+            sanitizeImageUri(uri, serviceComponent.packageName) { authority, pkg ->
+                pkg == serviceComponent.packageName &&
+                    verifyProviderOwnedByPackage(context, authority, pkg)
+            } ?: return null
         }
 
         val safeHeaders = if (safeUri.startsWith("http://") || safeUri.startsWith("https://")) {

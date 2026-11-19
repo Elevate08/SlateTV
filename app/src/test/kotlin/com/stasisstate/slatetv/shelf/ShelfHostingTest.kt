@@ -59,12 +59,12 @@ class ShelfHostingTest {
         assertNull(sanitizeImageUri("https://user:secret@tv.example/logo"))
         assertEquals(
             "content://example.tv.media/abc123",
-            sanitizeImageUri("content://example.tv.media/abc123", "example.tv"),
+            sanitizeImageUri("content://example.tv.media/abc123", "example.tv", ownsAll),
         )
-        assertNull(sanitizeImageUri("content://other.app.media/abc123", "example.tv"))
-        assertNull(sanitizeImageUri("content://example.tv.media/sub/path", "example.tv"))
-        assertNull(sanitizeImageUri("content://example.tv.media/..%2Fsecret", "example.tv"))
-        assertNull(sanitizeImageUri("content://example.tv.media/abc?foo=bar", "example.tv"))
+        assertNull(sanitizeImageUri("content://other.app.media/abc123", "example.tv", ownsAll))
+        assertNull(sanitizeImageUri("content://example.tv.media/sub/path", "example.tv", ownsAll))
+        assertNull(sanitizeImageUri("content://example.tv.media/..%2Fsecret", "example.tv", ownsAll))
+        assertNull(sanitizeImageUri("content://example.tv.media/abc?foo=bar", "example.tv", ownsAll))
         assertTrue(sanitizePayload(ShelfPayload(false, "", cards), provider.metadata).items.isEmpty())
 
         // Strict launchUri scheme allowlist & content:// header stripping
@@ -80,11 +80,72 @@ class ShelfHostingTest {
             title = "Bad Scheme",
             launchUri = "tel:5551234",
         )
-        val checked = sanitizePayload(ShelfPayload(true, "TV", listOf(allowed, blocked)), provider.metadata)
+        val checked = sanitizePayload(ShelfPayload(true, "TV", listOf(allowed, blocked)), provider.metadata, ownsAll)
         assertEquals("content://example.tv.media/logo01", checked.items[0].imageUri)
         assertEquals(emptyMap<String, String>(), checked.items[0].imageHeaders)
         assertEquals("jellyfin://channel/1", checked.items[0].launchUri)
         assertNull(checked.items[1].launchUri)
+    }
+
+    @Test
+    fun contentUriRequiresVerifiedProviderOwnership() {
+        val uri = "content://example.tv.media/abc123"
+        // Default verifier fails closed: content:// is never accepted without an ownership check.
+        assertNull(sanitizeImageUri(uri, "example.tv"))
+
+        val asked = mutableListOf<Pair<String, String>>()
+        val recording: ProviderOwnershipVerifier = { authority, pkg -> asked += authority to pkg; true }
+        assertEquals(uri, sanitizeImageUri(uri, "example.tv", recording))
+        assertEquals(listOf("example.tv.media" to "example.tv"), asked)
+
+        // Unregistered / rogue-owned provider -> rejected, in both entry points.
+        assertNull(sanitizeImageUri(uri, "example.tv") { _, _ -> false })
+        val item = ShelfItem(id = "logo", title = "Channel", imageUri = uri)
+        val metadata = Provider("tv").metadata
+        assertNull(sanitizePayload(ShelfPayload(true, "TV", listOf(item)), metadata).items.single().imageUri)
+        assertNull(
+            sanitizePayload(ShelfPayload(true, "TV", listOf(item)), metadata) { _, _ -> false }
+                .items.single().imageUri,
+        )
+        assertEquals(uri, sanitizePayload(ShelfPayload(true, "TV", listOf(item)), metadata, ownsAll).items.single().imageUri)
+
+        // Verifier is not consulted for malformed URIs, and HTTP(S) never needs it.
+        asked.clear()
+        assertNull(sanitizeImageUri("content://example.tv.media/abc?x=1", "example.tv", recording))
+        assertTrue(asked.isEmpty())
+        assertEquals("https://tv.example/logo", sanitizeImageUri("https://tv.example/logo", "example.tv"))
+    }
+
+    @Test
+    fun providerOwnershipRequiresMatchingPackageUidAndEnabledState() {
+        val owner = appInfo("example.tv", uid = 10_123)
+        assertTrue(isProviderInfoOwnedBy(providerInfo("example.tv", 10_123), "example.tv", owner))
+
+        // Unregistered authority or uninstalled owner.
+        assertFalse(isProviderInfoOwnedBy(null, "example.tv", owner))
+        assertFalse(isProviderInfoOwnedBy(providerInfo("example.tv", 10_123), "example.tv", null))
+        // Authority squatted by a different APK.
+        assertFalse(isProviderInfoOwnedBy(providerInfo("rogue.app", 10_999), "example.tv", owner))
+        // Same package name reported, but provider runs under a different UID.
+        assertFalse(isProviderInfoOwnedBy(providerInfo("example.tv", 10_999), "example.tv", owner))
+        // Owner info for a different package.
+        assertFalse(
+            isProviderInfoOwnedBy(providerInfo("example.tv", 10_123), "example.tv", appInfo("other", 10_123)),
+        )
+        // Missing application info / disabled component or app.
+        assertFalse(
+            isProviderInfoOwnedBy(
+                providerInfo("example.tv", 10_123).apply { applicationInfo = null }, "example.tv", owner,
+            ),
+        )
+        assertFalse(
+            isProviderInfoOwnedBy(providerInfo("example.tv", 10_123).apply { enabled = false }, "example.tv", owner),
+        )
+        assertFalse(
+            isProviderInfoOwnedBy(
+                providerInfo("example.tv", 10_123).apply { applicationInfo.enabled = false }, "example.tv", owner,
+            ),
+        )
     }
 
     @Test
@@ -189,4 +250,20 @@ class ShelfHostingTest {
             return result
         }
     }
+
+    private val ownsAll: ProviderOwnershipVerifier = { _, _ -> true }
+
+    private fun appInfo(pkg: String, uid: Int) = android.content.pm.ApplicationInfo().apply {
+        packageName = pkg
+        this.uid = uid
+        enabled = true
+    }
+
+    private fun providerInfo(pkg: String, uid: Int) = android.content.pm.ProviderInfo().apply {
+        packageName = pkg
+        authority = "example.tv.media"
+        enabled = true
+        applicationInfo = appInfo(pkg, uid)
+    }
+
 }

@@ -67,7 +67,9 @@ internal class ExternalShelfPluginAdapter(
                                     ?: declared.guideActivityClassName,
                             )
                         } ?: declared
-                        val payload = remote.getShelfPayload(Bundle())?.let { sanitizePayload(it, resolved) }
+                        val payload = remote.getShelfPayload(Bundle())?.let {
+                            sanitizePayload(it, resolved, ::isOwnedByServicePackage)
+                        }
                         resolved to payload
                     }.getOrNull())
                 }
@@ -88,6 +90,11 @@ internal class ExternalShelfPluginAdapter(
             runCatching { context.unbindService(connection) }
         }
     }
+
+    /** content:// images must come from the bound service's own APK, as confirmed by PackageManager. */
+    private fun isOwnedByServicePackage(authority: String, ownerPackageName: String): Boolean =
+        ownerPackageName == component.packageName &&
+            verifyProviderOwnedByPackage(context, authority, ownerPackageName)
 
     private fun recordTimeout(): ShelfData? {
         if (++consecutiveTimeouts >= 2) {
