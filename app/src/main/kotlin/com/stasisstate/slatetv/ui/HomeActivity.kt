@@ -1,5 +1,6 @@
 package com.stasisstate.slatetv.ui
 
+import android.Manifest
 import android.app.Dialog
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -38,6 +39,8 @@ import com.stasisstate.slatetv.R
 import com.stasisstate.slatetv.SlateApplication
 import com.stasisstate.slatetv.apps.AppInfo
 import com.stasisstate.slatetv.billing.TipJar
+import com.stasisstate.slatetv.calendar.CalendarAgenda
+import com.stasisstate.slatetv.calendar.GoogleCalendarSource
 import com.stasisstate.slatetv.settings.DefaultLauncherHelper
 import com.stasisstate.slatetv.settings.LauncherSettings
 import androidx.lifecycle.lifecycleScope
@@ -45,6 +48,9 @@ import com.stasisstate.slatetv.shelf.ShelfManager
 import com.stasisstate.slatetv.shelf.ShelfPluginRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -72,6 +78,12 @@ class HomeActivity : AppCompatActivity() {
     private lateinit var btnAllApps: ImageButton
     private lateinit var btnNextPhoto: ImageButton
     private lateinit var btnSettings: ImageButton
+
+    private lateinit var calendarPanel: HomeCalendarPanel
+    private val calendarSource by lazy { GoogleCalendarSource(applicationContext) }
+    private var calendarAgenda: CalendarAgenda? = null
+    private var calendarRefreshJob: Job? = null
+    private var calendarInForeground = false
 
     private val shelfRegistry by lazy { ShelfPluginRegistry(this, app.extensionRegistry) }
     private val shelfManager by lazy {
@@ -112,6 +124,15 @@ class HomeActivity : AppCompatActivity() {
 
     private val homePickerLauncher: ActivityResultLauncher<Intent> =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { onHomePickerResult() }
+
+    private val calendarPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                setShowCalendarEvents(true)
+            } else {
+                Toast.makeText(this, R.string.calendar_permission_denied, Toast.LENGTH_LONG).show()
+            }
+        }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val enterIdleRunnable = Runnable { enterIdleGalleryMode() }
@@ -213,6 +234,8 @@ class HomeActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        calendarInForeground = true
+        refreshCalendarEvents()
         exitIdleGalleryMode()
         backdropRenderer.ensureVisibleAfterWake()
         app.wallpaperManager.onResume()
@@ -235,6 +258,8 @@ class HomeActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        calendarInForeground = false
+        refreshCalendarEvents()
         exitDockReorderMode()
         super.onPause()
         mainHandler.removeCallbacks(enterIdleRunnable)
@@ -251,6 +276,7 @@ class HomeActivity : AppCompatActivity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        refreshCalendarEvents()
         val metrics = resources.displayMetrics
         app.wallpaperManager.configureDisplay(metrics.widthPixels, metrics.heightPixels)
         backdropRenderer.ensureVisibleAfterWake()
@@ -365,6 +391,7 @@ class HomeActivity : AppCompatActivity() {
         photoCaptionText = findViewById(R.id.photoCaptionText)
         offlineBadge = findViewById(R.id.offlineBadge)
         homeClock = findViewById(R.id.homeClock)
+        calendarPanel = HomeCalendarPanel(findViewById(R.id.homeCalendarPanel))
         focusedLabelText = findViewById(R.id.focusedLabelText)
         dockRecyclerView = findViewById(R.id.dockRecyclerView)
         btnAllApps = findViewById(R.id.btnAllApps)
@@ -467,11 +494,88 @@ class HomeActivity : AppCompatActivity() {
                 tipJar.launch(this, productId)
             },
             onManageDefaultHome = { showDefaultLauncherDialog() },
+            calendarStatus = ::calendarSettingsStatus,
+            onCalendarSettingClicked = ::onCalendarSettingClicked,
             onClosed = {
                 hudContainer.visibility = View.VISIBLE
                 ensureValidFocus()
             },
         )
+    }
+
+    private fun calendarSettingsStatus(): Int = when {
+        !calendarSource.isProviderAvailable() -> R.string.calendar_setting_unsupported
+        !currentSettings.showCalendarEvents -> R.string.calendar_setting_off
+        !calendarSource.hasReadPermission() -> R.string.calendar_setting_permission_required
+        else -> when (val agenda = calendarAgenda) {
+            null -> R.string.calendar_setting_on
+            CalendarAgenda.PermissionRequired -> R.string.calendar_setting_permission_required
+            CalendarAgenda.Unavailable -> R.string.calendar_setting_unavailable
+            CalendarAgenda.NoSyncedCalendars -> R.string.calendar_setting_not_synced
+            CalendarAgenda.MultipleAccounts -> R.string.calendar_setting_multiple_accounts
+            is CalendarAgenda.Ready -> if (agenda.events.isEmpty()) {
+                R.string.calendar_setting_no_events
+            } else {
+                R.string.calendar_setting_on
+            }
+        }
+    }
+
+    private fun onCalendarSettingClicked() {
+        when {
+            currentSettings.showCalendarEvents -> setShowCalendarEvents(false)
+            !calendarSource.isProviderAvailable() -> {
+                Toast.makeText(this, R.string.calendar_provider_missing, Toast.LENGTH_SHORT).show()
+            }
+            calendarSource.hasReadPermission() -> setShowCalendarEvents(true)
+            else -> {
+                runCatching { calendarPermissionLauncher.launch(Manifest.permission.READ_CALENDAR) }
+                    .onFailure {
+                        Toast.makeText(this, R.string.calendar_permission_prompt_unavailable, Toast.LENGTH_LONG).show()
+                    }
+            }
+        }
+    }
+
+    private fun setShowCalendarEvents(show: Boolean) {
+        currentSettings = app.launcherPreferences.update { it.copy(showCalendarEvents = show) }
+        refreshCalendarEvents()
+        refreshSettingsIfOpen()
+    }
+
+    private fun refreshCalendarEvents() {
+        calendarRefreshJob?.cancel()
+        calendarRefreshJob = null
+        if (!calendarInForeground || !currentSettings.showCalendarEvents) {
+            showCalendarAgenda(null)
+            return
+        }
+        calendarRefreshJob = lifecycleScope.launch {
+            while (isActive) {
+                val agenda = calendarSource.readUpcoming()
+                ensureActive()
+                showCalendarAgenda(
+                    if (agenda is CalendarAgenda.Ready && !calendarSource.hasReadPermission()) {
+                        CalendarAgenda.PermissionRequired
+                    } else {
+                        agenda
+                    },
+                )
+                delay(60_000L)
+            }
+        }
+    }
+
+    private fun showCalendarAgenda(agenda: CalendarAgenda?) {
+        val previous = calendarAgenda
+        calendarAgenda = agenda
+        val events = (agenda as? CalendarAgenda.Ready)?.events.orEmpty()
+        calendarPanel.render(events)
+        val statusChanged = previous?.javaClass != agenda?.javaClass ||
+            (previous is CalendarAgenda.Ready && previous.events.isEmpty() != events.isEmpty())
+        if (agenda != null && statusChanged) {
+            refreshSettingsIfOpen()
+        }
     }
 
     private fun launchHomePicker(intents: List<Intent>): Boolean =

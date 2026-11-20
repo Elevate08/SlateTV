@@ -15,6 +15,7 @@ data class LauncherSettings(
     val keepScreenOn: Boolean = false,      // Opt-in for dedicated digital photo frame mode (respects OLED/TV sleep by default)
     val disabledShelfPluginIds: Set<String> = emptySet(),
     val showSideloadedApps: Boolean = false,
+    val showCalendarEvents: Boolean = false,
 ) {
     val rotationIntervalLabel: String
         get() = when (rotationIntervalSeconds) {
@@ -53,6 +54,7 @@ class LauncherPreferences(context: Context) {
         keepScreenOn = prefs.getBoolean(KEY_KEEP_SCREEN_ON, false),
         disabledShelfPluginIds = prefs.getStringSet("disabled_shelf_plugin_ids", emptySet()).orEmpty().toSet(),
         showSideloadedApps = prefs.getBoolean(KEY_SHOW_SIDELOADED, false),
+        showCalendarEvents = prefs.getBoolean(KEY_SHOW_CALENDAR_EVENTS, false),
     )
 
     fun update(transform: (LauncherSettings) -> LauncherSettings): LauncherSettings {
@@ -73,6 +75,7 @@ class LauncherPreferences(context: Context) {
             .putBoolean(KEY_KEEP_SCREEN_ON, settings.keepScreenOn)
             .putStringSet("disabled_shelf_plugin_ids", settings.disabledShelfPluginIds.toSet())
             .putBoolean(KEY_SHOW_SIDELOADED, settings.showSideloadedApps)
+            .putBoolean(KEY_SHOW_CALENDAR_EVENTS, settings.showCalendarEvents)
             .apply()
     }
 
@@ -87,6 +90,7 @@ class LauncherPreferences(context: Context) {
         private const val KEY_SMART_PORTRAIT = "smart_portrait_blur"
         private const val KEY_KEEP_SCREEN_ON = "keep_screen_on"
         private const val KEY_SHOW_SIDELOADED = "show_sideloaded_apps"
+        private const val KEY_SHOW_CALENDAR_EVENTS = "show_calendar_events"
 
         val ROTATION_OPTIONS = listOf(0, 60, 180, 300, 600, 1800)
         val IDLE_OPTIONS = listOf(0, 20, 45, 120)

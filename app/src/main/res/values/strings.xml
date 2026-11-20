@@ -8,4 +8,19 @@
     <string name="gallery_hint">Press any key to show dock</string>
     <string name="next_shelf">Next shelf</string>
     <string name="full_shelf_guide">Full Guide</string>
+    <string name="calendar_setting_title">Show Google Calendar Events</string>
+    <string name="calendar_setting_off">Off · Show synced event titles and times on Home. Calendar data stays on this TV.</string>
+    <string name="calendar_setting_on">On</string>
+    <string name="calendar_setting_no_events">On · No events in the next 7 days</string>
+    <string name="calendar_setting_unsupported">Calendar storage is unavailable on this TV</string>
+    <string name="calendar_setting_unavailable">On · Calendar data is unavailable</string>
+    <string name="calendar_setting_not_synced">On · No Google calendars are synced to this TV</string>
+    <string name="calendar_setting_multiple_accounts">On · This TV has calendars from multiple Google accounts</string>
+    <string name="calendar_setting_permission_required">On · Allow Calendar access in Android app settings</string>
+    <string name="calendar_provider_missing">Calendar storage is unavailable on this TV.</string>
+    <string name="calendar_permission_denied">Calendar events are off. To enable them, allow Calendar access for Slate TV in Android app settings.</string>
+    <string name="calendar_permission_prompt_unavailable">Unable to request Calendar access. Check Slate TV’s permissions in Android settings.</string>
+    <string name="privacy_policy">Privacy Policy</string>
+    <string name="privacy_policy_url" translatable="false">https://stasisstate.com/slatetv-privacy.html</string>
+    <string name="privacy_policy_browser_unavailable">Open the privacy policy address on another device.</string>
 </resources>

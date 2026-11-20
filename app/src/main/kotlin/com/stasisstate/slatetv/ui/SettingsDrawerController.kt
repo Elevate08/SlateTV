@@ -4,11 +4,13 @@ import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
 import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.stasisstate.slatetv.R
 import com.stasisstate.slatetv.apps.AppRepository
@@ -47,6 +49,8 @@ internal class SettingsDrawerController(
     private val onClearCache: () -> Unit,
     private val onTipSelected: (productId: String) -> Unit,
     private val onManageDefaultHome: () -> Unit,
+    private val calendarStatus: () -> Int,
+    private val onCalendarSettingClicked: () -> Unit,
     private val onClosed: () -> Unit,
 ) {
     private var tipJarState: TipJarState = TipJarState()
@@ -215,6 +219,13 @@ internal class SettingsDrawerController(
             rebuild(lastSyncStatus)
         }
 
+        addRow(
+            context.getString(R.string.calendar_setting_title),
+            context.getString(calendarStatus()),
+            "show-calendar-events",
+            onClick = onCalendarSettingClicked,
+        )
+
         addRow("Show Photo Date & Location", if (settings.showCaption) "On" else "Off") {
             val updated = preferences.update { it.copy(showCaption = !it.showCaption) }
             onSettingsChanged(updated, false, false)
@@ -287,6 +298,14 @@ internal class SettingsDrawerController(
 
         addSectionHeader("SUPPORT SLATE TV")
         addTipJarSection()
+        val privacyPolicyUrl = context.getString(R.string.privacy_policy_url)
+        addRow(context.getString(R.string.privacy_policy), privacyPolicyUrl, "privacy-policy") {
+            runCatching {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(privacyPolicyUrl)))
+            }.onFailure {
+                Toast.makeText(context, R.string.privacy_policy_browser_unavailable, Toast.LENGTH_LONG).show()
+            }
+        }
 
         if (previouslyFocusedKey != null) {
             itemsContainer.post {

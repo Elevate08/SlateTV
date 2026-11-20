@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="home_calendar_heading">Upcoming events</string>
+    <string name="home_calendar_untitled">Untitled event</string>
+    <string name="home_calendar_all_day">%1$s · All day</string>
+    <string name="home_calendar_in_progress">In progress · %1$s</string>
+</resources>

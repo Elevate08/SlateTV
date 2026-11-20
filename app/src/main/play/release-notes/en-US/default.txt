@@ -1,6 +1,3 @@
-1.0.0-beta.4
-- Jellyfin rows (Next up, Recently added, Continue watching and more) now come straight from the installed Jellyfin app. No separate Jellyfin sign-in.
-- Jellyfin posters load on Home cards.
-- Live TV & Guide uses Android TV system Live Channels; the Jellyfin server sign-in was removed.
-- Clearer Default Home status when another launcher still takes over.
-- Broader Android TV device compatibility (removed required landscape hardware feature).
+1.0.0-beta.5
+- Show upcoming Google Calendar events on Home. Opt in under Settings → Display & Gallery.
+- Supported TVs use calendars already synced to the device. Allow read-only Calendar access to show event titles and times without another Google sign-in.
