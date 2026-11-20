@@ -336,7 +336,10 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
         if (choices.isEmpty()) return editServerAddress()
         val labels = choices.map { (server, url) -> "${server.name}  ·  $url" } + "Type an address…"
         pick("Server address", labels, choices.indexOfFirst { it.second == config.normalizedServerUrl }) { index ->
-            if (index < choices.size) setServer(choices[index].second) else editServerAddress()
+            when {
+                index >= choices.size -> editServerAddress()
+                choices[index].second != config.normalizedServerUrl -> startSignIn(choices[index].second)
+            }
         }
     }
 
@@ -351,29 +354,34 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * A typed address that differs from the saved one drops the token, so it is only ever sent to
+     * the server it was issued for (a typo or look-alike host can't collect it).
+     */
     private fun setServer(url: String) {
         if (url == config.normalizedServerUrl) return
         allEntities = null
-        // Keep the token: internal and external addresses of one server share it; Sign in replaces it.
-        save(config.copy(serverUrl = url))
+        val hadToken = config.token.isNotBlank()
+        save(config.copy(serverUrl = url, token = ""))
+        if (hadToken && url.isNotBlank()) showStatus("Server changed — sign in to connect", Kind.WARNING)
     }
 
+    /**
+     * Signs in to a discovered server. Its address is saved only together with the token it issues
+     * (see onSignedIn), so a spoofed mDNS answer never receives the saved token.
+     */
     private fun useDiscovered(server: DiscoveredHaServer) {
-        val go = { url: String ->
-            setServer(url)
-            startSignIn()
-        }
-        if (server.urls.size == 1) return go(server.primaryUrl)
-        pick(server.name, server.urls, 0) { go(server.urls[it]) }
+        if (server.urls.size == 1) return startSignIn(server.primaryUrl)
+        pick(server.name, server.urls, 0) { startSignIn(server.urls[it]) }
     }
 
-    private fun startSignIn() {
-        if (config.normalizedServerUrl.isBlank()) {
+    private fun startSignIn(url: String = config.normalizedServerUrl) {
+        if (url.isBlank()) {
             showStatus("Choose your server first", Kind.WARNING)
             chooseServerAddress()
             return
         }
-        signIn.start(config.normalizedServerUrl)
+        signIn.start(url)
     }
 
     private fun pasteToken() {
