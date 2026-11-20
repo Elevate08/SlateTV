@@ -47,7 +47,7 @@ Description: `"An optional tip to support Slate TV development. It does not unlo
 Slate TV is an **Android TV-only** app (`android.software.leanback` required), so all releases target Google Play's dedicated `tv:` form-factor tracks. Bump `versionCode` (and `versionName`, e.g., `1.0.0-beta.3`) in `app/build.gradle.kts` before every upload:
 
 ```sh
-./gradlew :app:publishReleaseBundle :app:publishReleaseListing   # Android TV closed testing ("tv:alpha") + listing
+./gradlew :app:publishReleaseBundle :app:publishReleaseListing   # Android TV closed testing ("tv:Closed Testing - Beta") + listing
 ./gradlew :app:publishReleaseListing                             # Store text & graphics only
 ./gradlew :app:publishReleaseBundle -PplayTrack=tv:qa            # Android TV internal testing
 ./gradlew :app:publishReleaseBundle -PplayTrack=tv:production    # Android TV production
