@@ -184,7 +184,12 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
         val controlsSummary = if (c.homeEntityIds.isEmpty()) {
             "None — pick lights, switches, scenes or scripts to show above the dock"
         } else {
-            c.homeEntityIds.joinToString(", ") { names[it]?.friendlyName ?: it }
+            val titles = c.homeEntityIds.map { names[it]?.friendlyName ?: it }
+            // Same-named controls ("Ceiling", "Ceiling") get their area once the registry is loaded.
+            c.homeEntityIds.zip(titles).joinToString(", ") { (id, title) ->
+                val area = registry.area(id)?.name
+                if (titles.count { it == title } > 1 && area != null) "$title ($area)" else title
+            }
         }
         rows.row("Choose home controls", controlsSummary, "controls", ::chooseHomeControls)
 
