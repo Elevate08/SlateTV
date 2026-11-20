@@ -1,83 +1,95 @@
 # Android TV Setup Guide
 
-This guide walks through installing and configuring **Slate TV** (`com.stasisstate.slatetv`) on an Android TV device.
+Slate TV (`com.stasisstate.slatetv`) is a single APK. Every connector and extension is built in, so you don't need any companion apps.
 
 ---
 
-## 1. Install Slate TV via Google Play or ADB
+## 1. Install
 
-Slate TV ships as a **single self-contained APK / App Bundle**—no companion plugin APKs or sideloading are required. Built-in photo server support, System Live Channels / EPG Guide, and zero-code HTTP/JSON extensions all live inside Slate TV.
+Install from Google Play, or sideload over ADB.
 
-For local testing over ADB, enable **Network Debugging** on your Android TV (`Settings > Device Preferences > About > Build` x7 to unlock Developer Options, then `Developer Options > Network Debugging`):
+### Enable ADB debugging
+
+1. **Unlock Developer options.** Open **Settings → System → About** (on SHIELD: **Settings → Device Preferences → About**). Select **Build** (labelled **Android TV OS build** on Google TV) 7 times.
+2. **Turn on debugging.** In **Settings → System → Developer options**, turn on **USB debugging**, then one of:
+   - **Wireless debugging** (Google TV, Android 11+). Open it, then select **Pair device with pairing code**. Note the IP, port and code it shows.
+   - **Network debugging** (SHIELD and older Android TV). The TV listens on port `5555`.
+3. **Connect.** Accept the **Allow debugging?** prompt on the TV.
+   ```bash
+   # Wireless debugging: pair once, then connect to the port on the Wireless debugging screen (not the pairing port)
+   adb pair <TV_IP>:<PAIRING_PORT> <CODE>
+   adb connect <TV_IP>:<PORT>
+
+   # Network debugging
+   adb connect <TV_IP>:5555
+   ```
+
+On Google TV, Wireless debugging turns off when the TV restarts. Turn it back on to reconnect.
+
+### Install the APK
 
 ```bash
-# Connect to your Android TV's local IP
-adb connect <TV_IP>:5555
-
-# Install Slate TV (single APK includes built-in connectors + JSON extension manager)
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 
-# (Optional) Grant System Live Channels EPG access if your Android TV build suppresses the runtime prompt
+# Optional: Live Channels guide access, if the TV never shows the permission prompt
 adb shell pm grant com.stasisstate.slatetv android.permission.READ_TV_LISTINGS
 ```
 
 ---
 
-## 2. Configure Built-In Connectors & Zero-Code JSON Extensions
+## 2. Set Slate TV as the Home launcher
 
-Configure everything directly inside **Slate TV Settings** (zero extra app icons cluttering your launcher):
-
-- **Background Sources:** Open **Slate TV Settings → BACKGROUND SOURCE** to choose **Ambient Slate**, **Local Photos**, **Immich Photos** (tap **Configure Immich Photos** for LAN auto-discovery, email & password sign-in, or QR phone pairing, with TOFU TLS certificate pinning), or any installed JSON photo feed extension.
-  - **Sign in with email & password:** type just the address (e.g. `192.168.1.20` or `photos.example.com`) — Slate TV finds the right scheme and Immich's default port `2283` on its own, remembers your email, and mints a read-only "Slate TV" API key. The password is never stored.
-  - **Pair with phone (QR):** no password on the TV and nothing ever connects to the TV — only TV → Immich traffic, so it works behind strict firewalls. The TV shows a QR code (opens Immich in your phone's browser) and a code like `slate-k7m4q9xa`. In Immich on your phone, open an album → **Share → Create link**, set **Custom URL** to that code (no password) and create it. The TV finds the link within seconds and shows that album, read-only. Needs Immich v1.137+. Afterwards you can remove the custom URL; the link keeps working. For your whole library, favorites or recent photos, use email & password sign-in.
-- **Live TV & Guide Shelf:** Open **Slate TV Settings → HOME SHELVES** and tap **Configure Live TV & Guide**. Uses Android TV's built-in **System Live Channels** EPG only (no login; just grant `READ_TV_LISTINGS`). Jellyfin content (Next Up, Latest Media, Watch Next) appears through **App Channels** when the Jellyfin app is installed, with no Jellyfin sign-in in Slate TV. Auto-hides whenever unconfigured or unavailable.
-- **Google Calendar:** Open **Slate TV Settings → DISPLAY & GALLERY → Show Google Calendar Events** and allow Android's read-only Calendar permission. The feature is off by default and requires no additional Google sign-in. Slate TV shows up to three events over the next seven days from visible calendars already synced to a single Google account on the TV. Event titles and times stay on the device and are visible to anyone who can see the home screen. Turning the setting off hides them immediately. Availability depends on the TV's Android Calendar Provider and Google Calendar sync. If the provider has calendars from more than one Google account, the agenda stays hidden because Slate TV cannot determine the active Google TV profile.
-- **Home Assistant:** Open **Slate TV Settings → SMART HOME → Home Assistant**. See [section 4](#4-home-assistant-doorbell-alerts--home-controls).
-- **Zero-Code JSON Extensions:** Open **Slate TV Settings → PLUGINS → Manage Plugins** to browse the plugin catalog (install, uninstall or reinstall first-party plugins) or add any HTTP/JSON photo feed or home shelf manifest via **Phone QR Code** or direct URL (with explicit on-TV confirmation).
-
----
-
-## 3. Setting Slate TV as Default Home Launcher
-
-1. Open **Slate TV Settings → APPS & SYSTEM → Default Home Launcher → Set Slate TV as Default Home**. Select **Slate TV** in the Android picker and confirm **Set as default**. Press Home to verify which launcher opens.
-2. **If you previously used an Accessibility-based launcher:** Disable its Accessibility Service under **Android TV Settings > Device Preferences > Accessibility**.
-3. If the picker is unavailable or Home still opens the stock launcher, connect over ADB and check which app handles Home after setting Slate TV as the preferred launcher.
+1. Open **Slate TV Settings → APPS & SYSTEM → Default Home Launcher → Set Slate TV as Default Home**. Pick **Slate TV** and select **Set as default**, then press **Home** to check.
+2. If you used an Accessibility-based launcher before, turn off its service in **Settings → Device Preferences → Accessibility**.
+3. If Home still opens the stock launcher, set Slate TV as Home over ADB, then check which app handles Home:
    ```bash
    adb shell cmd package set-home-activity --user current com.stasisstate.slatetv/.ui.HomeActivity
    adb shell cmd package resolve-activity --brief --user current --query-flags 65536 -a android.intent.action.MAIN -c android.intent.category.HOME
    ```
-4. On NVIDIA SHIELD, Android TV Home can keep handling the Home button after Android selects Slate TV. If the check still reports `com.google.android.tvlauncher/.MainActivity`, disable Android TV Home for the current user, then press Home again.
+4. **NVIDIA SHIELD:** if the check still reports `com.google.android.tvlauncher`, turn off Android TV Home:
    ```bash
    adb shell pm disable-user --user current com.google.android.tvlauncher
+   # Undo
+   adb shell pm enable --user current com.google.android.tvlauncher
    ```
 
-### Restore Android TV Home on NVIDIA SHIELD
-
-```bash
-adb shell pm enable --user current com.google.android.tvlauncher
-adb shell cmd package set-home-activity --user current com.google.android.tvlauncher/.MainActivity
-```
+> **Google TV (Chromecast and others):** Google TV ignores the preferred Home setting. Turning off `com.google.android.apps.tv.launcherx` makes Home open Google's setup-recovery screen instead of Slate TV. **Do not turn off `com.google.android.tungsten.setupwraith`.** Doing that took a Chromecast HD offline. Undo with `adb shell pm enable --user current <package>`.
 
 ---
 
-## 4. Home Assistant: Doorbell Alerts & Home Controls
+## 3. Configure
 
-Slate TV connects directly to your Home Assistant server. It needs no add-on or custom integration.
+Everything is in **Slate TV Settings**:
 
-1. **Create a token.** In Home Assistant, open your **Profile → Security → Long-lived access tokens → Create token**. Slate TV stores the token encrypted with the Android Keystore and sends it only to the server address you enter.
-2. **Connect.** Open **Slate TV Settings → SMART HOME → Home Assistant**. Enter the server address (for example `http://homeassistant.local:8123`) and the token, then select **Test connection**.
-3. **Home screen controls (optional).** Under **Choose home controls**, pick up to 12 lights, switches, fans, covers, toggles (input booleans), scenes, or scripts. They appear as a row above the dock: press **Up** from the dock to reach them. Press **OK** to toggle a device or run a scene or script. Hold **OK** on a dimmable light to set its brightness.
-4. **Doorbells.** Select **Add doorbell**, pick the entity that fires when someone rings (a binary sensor, `event.*` entity, or button), then optionally pick a camera. When it rings, a card with the live camera feed appears in the corner of the screen. Press **Left/Right** to choose a reply, **OK** to send it, or **Back** to dismiss. The card closes on its own after the auto-dismiss time.
-5. **Quick replies.** Each reply always fires a `slatetv_quick_reply` event in Home Assistant. Its data includes `message`, `doorbell`, `camera`, and `source`. A reply can also run a script, scene, or button you pick. Scripts receive the same fields as variables, so a script can play `{{ message }}` on a doorbell speaker. To act on replies without a script, create an automation in Home Assistant with an **Event** trigger of type `slatetv_quick_reply`. Firing the event requires an admin user's token. Replies that run a script work with any user's token.
+| Feature | Where | Notes |
+| --- | --- | --- |
+| **Background** | **BACKGROUND SOURCE** | Ambient Slate, Local Photos, Immich Photos, or a JSON photo feed. |
+| **Live TV & Guide** | **HOME SHELVES → Configure Live TV & Guide** | Uses the TV's System Live Channels guide and needs `READ_TV_LISTINGS`. Jellyfin rows appear through App Channels when the Jellyfin app is installed. The shelf hides when it has nothing to show. |
+| **Google Calendar** | **DISPLAY & GALLERY → Show Google Calendar Events** | Off by default. Shows up to 3 events from the next 7 days, from the one Google account synced on the TV. It stays hidden if the TV has more than one account. Events are visible to anyone who can see the screen. |
+| **Home Assistant** | **SMART HOME → Home Assistant** | See [section 4](#4-home-assistant). |
+| **Plugins** | **PLUGINS → Manage Plugins** | Install, remove or reinstall catalog plugins, or add a JSON manifest by phone QR code or URL. |
 
-### Show alerts over other apps
+### Immich Photos
 
-To show the doorbell card over whatever is playing, Slate TV needs **Display over other apps** access. Select **Show alerts over other apps** in the Home Assistant settings. Many TVs don't include this settings screen. If yours doesn't, grant access over ADB:
+Open **BACKGROUND SOURCE → Configure Immich Photos**. Slate TV can find servers on your network and pins each server's TLS certificate the first time it connects.
+
+- **Email & password:** enter the server address, such as `192.168.1.20`. Slate TV finds the scheme and port (default `2283`) and creates a read-only "Slate TV" API key. It doesn't store your password.
+- **Phone QR pairing** (Immich v1.137+, one album): the TV shows a QR code and a code like `slate-k7m4q9xa`. In Immich on your phone, open an album, select **Share → Create link**, set **Custom URL** to that code, and create the link. The TV picks it up within seconds. Only the TV makes connections, so this works behind strict firewalls.
+
+---
+
+## 4. Home Assistant
+
+1. **Create a token.** In Home Assistant, open **Profile → Security → Long-lived access tokens → Create token**. Slate TV encrypts the token and sends it only to the server you enter.
+2. **Connect.** In **SMART HOME → Home Assistant**, enter the server address (for example `http://homeassistant.local:8123`) and the token, then select **Test connection**.
+3. **Home controls (optional).** Under **Choose home controls**, pick up to 12 lights, switches, fans, covers, input booleans, scenes or scripts. They appear in a row above the dock. Press **Up** to reach them and **OK** to toggle or run one. Hold **OK** on a dimmable light to set its brightness.
+4. **Doorbells.** Select **Add doorbell**, pick the entity that fires on a ring (binary sensor, `event.*` or button), and optionally a camera. When someone rings, a card with the live camera feed appears. Press **Left/Right** to choose a reply, **OK** to send it, or **Back** to dismiss it.
+5. **Quick replies.** Each reply fires a `slatetv_quick_reply` event with `message`, `doorbell`, `camera` and `source`, and can also run a script, scene or button. Scripts get the same fields as variables, for example `{{ message }}`. Firing the event needs an admin token. Running a script works with any token.
+
+**Alerts over other apps:** select **Show alerts over other apps** in the Home Assistant settings. If your TV doesn't have that screen, run:
 
 ```bash
 adb shell appops set com.stasisstate.slatetv SYSTEM_ALERT_WINDOW allow
 ```
 
-Without this access, doorbell alerts only appear while Slate TV is on screen.
-
-While doorbell alerts are on, Slate TV keeps a small background service running, so Android doesn't suspend the connection while another app is in front. Turning alerts off, or removing all doorbells, stops the service. Some Android system screens, such as Settings, hide all overlays while they are open.
+Without this access, alerts only appear while Slate TV is on screen. While alerts are on, a small background service keeps the connection alive. Some system screens, such as Settings, hide all overlays.
