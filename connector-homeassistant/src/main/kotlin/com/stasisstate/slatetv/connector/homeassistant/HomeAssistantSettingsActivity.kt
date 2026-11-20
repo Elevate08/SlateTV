@@ -61,8 +61,11 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
 
         rows = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            // Side padding leaves room for the focused row's zoom so it isn't clipped.
+            // Side padding leaves room for the focused row's zoom; clipToPadding must be off
+            // or the zoomed row is still cut at its unscaled left and right edges.
             setPadding(dp(16), dp(6), dp(16), dp(24))
+            clipToPadding = false
+            clipChildren = false
         }
         val screen = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL

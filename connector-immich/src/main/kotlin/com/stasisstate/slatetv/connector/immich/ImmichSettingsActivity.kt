@@ -98,19 +98,23 @@ class ImmichSettingsActivity : AppCompatActivity() {
 
         val rows = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 0, dp(12), dp(24))
+            // Side padding leaves room for the focused row's zoom; clipToPadding must be off
+            // or the zoomed row is still cut at its unscaled left and right edges.
+            setPadding(dp(16), dp(6), dp(16), dp(24))
+            clipToPadding = false
+            clipChildren = false
         }
         val screen = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(BG)
-            setPadding(dp(64), dp(36), dp(64), dp(24))
+            setPadding(dp(48), dp(36), dp(48), dp(24))
         }
         setContentView(screen)
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(18))
+            setPadding(dp(16), 0, dp(16), dp(18))
         }
         header.addView(TextView(this).apply {
             text = "Immich Photos"
@@ -152,6 +156,7 @@ class ImmichSettingsActivity : AppCompatActivity() {
         discoveredRows = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
+            clipChildren = false
         }
         rows.addView(discoveredRows, LinearLayout.LayoutParams(-1, -2))
         urlRow = rows.row("Server address", "") {

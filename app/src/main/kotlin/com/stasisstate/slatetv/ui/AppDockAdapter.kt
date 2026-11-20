@@ -69,6 +69,8 @@ class AppDockAdapter(
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): DockViewHolder {
         val view = LayoutInflater.from(parent.context)
             .inflate(R.layout.item_dock_app, parent, false)
+        view.findViewById<View>(R.id.appTileContent).clipToRoundedRect(TILE_CONTENT_RADIUS_DP)
+        view.findViewById<View>(R.id.appIconImage).clipToRoundedRect(TILE_ICON_RADIUS_DP)
         return DockViewHolder(view)
     }
 
