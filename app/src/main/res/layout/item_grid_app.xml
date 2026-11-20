@@ -40,7 +40,7 @@
             android:layout_height="wrap_content"
             android:layout_gravity="top|end"
             android:layout_margin="6dp"
-            android:background="#CC16A34A"
+            android:background="@drawable/bg_pin_badge"
             android:paddingStart="6dp"
             android:paddingTop="1dp"
             android:paddingEnd="6dp"

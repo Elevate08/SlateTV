@@ -62,6 +62,9 @@ class AllAppsOverlayController(
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): GridViewHolder {
             val view = LayoutInflater.from(parent.context)
                 .inflate(R.layout.item_grid_app, parent, false)
+            // Banner corners follow the tile's rounded background instead of poking past it.
+            view.findViewById<View>(R.id.gridAppBanner).clipToRoundedRect(TILE_CONTENT_RADIUS_DP)
+            view.findViewById<View>(R.id.gridAppIcon).clipToRoundedRect(TILE_ICON_RADIUS_DP)
             return GridViewHolder(view)
         }
 
