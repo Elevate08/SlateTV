@@ -29,8 +29,8 @@ android {
         applicationId = "com.stasisstate.slatetv"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "1.0.0-beta.7"
+        versionCode = 8
+        versionName = "1.0.0-beta.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

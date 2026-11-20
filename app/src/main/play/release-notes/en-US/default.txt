@@ -1,3 +1,4 @@
-1.0.0-beta.7
-- Immich: new phone pairing that works behind strict firewalls. Share an album from Immich on your phone using the code shown on the TV. Nothing connects to the TV.
-- Immich sign-in is easier: type just the server address (port 2283 is found automatically) and your email is remembered.
+1.0.0-beta.8
+- New plugin catalog: Settings → Plugins → Manage Plugins lists Slate TV plugins to install, uninstall or reinstall. Add more catalogs under Plugin Sources.
+- Immich, Home Assistant and Live TV can be uninstalled if you don't use them, and reinstalled later with your settings kept.
+- Rounded app tile corners, and settings rows no longer get cut off when focused.
