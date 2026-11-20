@@ -44,6 +44,22 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
     private var allEntities: List<HaEntity>? = null
     private var loadJob: Job? = null
     private var statusOverride: Pair<String, Kind>? = null
+    private val discovery by lazy { HaServerDiscovery(this) }
+    private var discovered: List<DiscoveredHaServer> = emptyList()
+    private val signIn by lazy {
+        HaSignInFlow(
+            activity = this,
+            styleDialog = ::styleDialog,
+            status = { message, tone -> showStatus(message, tone.kind) },
+            showAlternatives = ::showAdbCommand,
+            onSignedIn = { url, result ->
+                allEntities = null
+                save(config.copy(serverUrl = url, token = result.longLivedToken))
+                val version = result.info.version.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+                showStatus("Signed in to ${result.info.locationName}$version", Kind.SUCCESS)
+            },
+        )
+    }
 
     private enum class Kind(val fill: Int, val text: Int) {
         NEUTRAL(0xFF1E293B.toInt(), 0xFFCBD5E1.toInt()),
@@ -109,6 +125,25 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        discovery.start { servers ->
+            discovered = servers
+            if (::rows.isInitialized) rebuild()
+        }
+    }
+
+    override fun onStop() {
+        discovery.stop()
+        discovered = emptyList()
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        signIn.cancel()
+        super.onDestroy()
+    }
+
     override fun onResume() {
         super.onResume()
         // Returning from the overlay-permission screen: reflect the new grant.
@@ -123,31 +158,21 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
         val c = config
 
         rows.section("CONNECTION")
-        rows.row("Server address", c.normalizedServerUrl.ifBlank { "Not set — e.g. http://homeassistant.local:8123" }, "url") {
-            edit("Server address", c.serverUrl.ifBlank { "http://" }, "http://homeassistant.local:8123", URL_INPUT) { value ->
-                val normalized = HaConfig.normalizeServerUrl(value)
-                if (value.isNotBlank() && normalized.isBlank()) {
-                    showStatus("That doesn't look like an http(s) address", Kind.ERROR)
-                } else {
-                    save(config.copy(serverUrl = normalized))
-                    allEntities = null
-                }
+        rows.row("Server address", c.normalizedServerUrl.ifBlank { "Not set — select to find or type your server" }, "url") {
+            chooseServerAddress()
+        }
+        discovered.filter { it.primaryUrl != c.normalizedServerUrl }.forEach { server ->
+            val version = server.version.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+            rows.row("Found: ${server.name}", "${server.primaryUrl}$version · Select to use and sign in", "found:${server.key}") {
+                useDiscovered(server)
             }
         }
         rows.row(
-            "Long-lived access token",
-            if (c.token.isBlank()) "Not set — create one in Home Assistant: Profile → Security → Long-lived access tokens"
-            else "Saved (encrypted) · ends …${c.token.takeLast(4)}",
-            "token",
-        ) {
-            edit("Long-lived access token", "", "Paste the token", TOKEN_INPUT) { value ->
-                if (value.isNotBlank()) {
-                    save(config.copy(token = value.trim()))
-                    allEntities = null
-                    testConnection()
-                }
-            }
-        }
+            if (c.token.isBlank()) "Sign in" else "Sign in again",
+            if (c.token.isBlank()) "Use your Home Assistant username and password — the password is never stored"
+            else "Signed in · token ends …${c.token.takeLast(4)}. Sign in again to replace it.",
+            "signin",
+        ) { startSignIn() }
         rows.row("Test connection", "Check the address and token", "test", ::testConnection)
 
         rows.section("HOME SCREEN CONTROLS")
@@ -207,6 +232,16 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
             runtime.simulateRing(binding)
         }
 
+        rows.section("ADVANCED")
+        rows.row(
+            "Paste an access token",
+            if (c.token.isBlank()) "Create one in Home Assistant: Profile → Security → Long-lived access tokens"
+            else "Saved (encrypted) · ends …${c.token.takeLast(4)}",
+            "token",
+            ::pasteToken,
+        )
+        rows.row("Set up from a computer (adb)", "Send the address and a token over adb — no typing on the TV", "adb", ::showAdbCommand)
+
         rows.section("DISCONNECT")
         rows.row("Forget this Home Assistant", "Removes the address, token, and all selections", "forget") {
             AlertDialog.Builder(this)
@@ -251,10 +286,10 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
     private fun renderStatus() {
         if (!::statusPill.isInitialized) return
         val (message, kind) = statusOverride ?: when (val status = runtime.status.value) {
-            HaStatus.NotConfigured -> "Setup needed — add address and token" to Kind.WARNING
+            HaStatus.NotConfigured -> "Setup needed — sign in" to Kind.WARNING
             HaStatus.Connecting -> "Connecting…" to Kind.WORKING
             HaStatus.Connected -> "Connected" to Kind.SUCCESS
-            HaStatus.AuthFailed -> "Token rejected — paste a new one" to Kind.ERROR
+            HaStatus.AuthFailed -> "Token rejected — sign in again" to Kind.ERROR
             is HaStatus.Disconnected -> "Offline — retrying in ${status.retryInSeconds}s" to Kind.ERROR
         }
         statusPill.text = "●  $message"
@@ -269,7 +304,7 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
 
     private fun testConnection() {
         if (!config.isConfigured) {
-            showStatus("Add the server address and token first", Kind.WARNING)
+            showStatus("Set the server address and sign in first", Kind.WARNING)
             return
         }
         showStatus("Testing…", Kind.WORKING)
@@ -282,6 +317,106 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
                 }
                 .onFailure { showStatus(it.message ?: "Connection failed", Kind.ERROR) }
         }
+    }
+
+    // ── Connection setup ──────────────────────────────────────────────────────────
+
+    private val HaSignInTone.kind: Kind
+        get() = when (this) {
+            HaSignInTone.NEUTRAL -> Kind.NEUTRAL
+            HaSignInTone.WORKING -> Kind.WORKING
+            HaSignInTone.SUCCESS -> Kind.SUCCESS
+            HaSignInTone.ERROR -> Kind.ERROR
+            HaSignInTone.WARNING -> Kind.WARNING
+        }
+
+    /** Discovered servers as one-click choices, plus manual entry. */
+    private fun chooseServerAddress() {
+        val choices = discovered.flatMap { server -> server.urls.map { server to it } }
+        if (choices.isEmpty()) return editServerAddress()
+        val labels = choices.map { (server, url) -> "${server.name}  ·  $url" } + "Type an address…"
+        pick("Server address", labels, choices.indexOfFirst { it.second == config.normalizedServerUrl }) { index ->
+            if (index < choices.size) setServer(choices[index].second) else editServerAddress()
+        }
+    }
+
+    private fun editServerAddress() {
+        edit("Server address", config.serverUrl.ifBlank { "http://" }, "http://homeassistant.local:8123", URL_INPUT) { value ->
+            val normalized = HaConfig.normalizeServerUrl(value)
+            if (value.isNotBlank() && normalized.isBlank()) {
+                showStatus("That doesn't look like an http(s) address", Kind.ERROR)
+            } else {
+                setServer(normalized)
+            }
+        }
+    }
+
+    private fun setServer(url: String) {
+        if (url == config.normalizedServerUrl) return
+        allEntities = null
+        // Keep the token: internal and external addresses of one server share it; Sign in replaces it.
+        save(config.copy(serverUrl = url))
+    }
+
+    private fun useDiscovered(server: DiscoveredHaServer) {
+        val go = { url: String ->
+            setServer(url)
+            startSignIn()
+        }
+        if (server.urls.size == 1) return go(server.primaryUrl)
+        pick(server.name, server.urls, 0) { go(server.urls[it]) }
+    }
+
+    private fun startSignIn() {
+        if (config.normalizedServerUrl.isBlank()) {
+            showStatus("Choose your server first", Kind.WARNING)
+            chooseServerAddress()
+            return
+        }
+        signIn.start(config.normalizedServerUrl)
+    }
+
+    private fun pasteToken() {
+        edit("Long-lived access token", "", "Paste the token", TOKEN_INPUT) { value ->
+            if (value.isNotBlank()) {
+                save(config.copy(token = value.trim()))
+                allEntities = null
+                testConnection()
+            }
+        }
+    }
+
+    private fun showAdbCommand() {
+        val command = HaProvisioning.adbCommand(packageName, config.normalizedServerUrl)
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(8), dp(24), dp(8))
+            addView(TextView(context).apply {
+                text = "1. Create a long-lived token in Home Assistant (Profile → Security) and save it in token.txt.\n" +
+                    "2. Connect adb to this TV (Developer options → Network debugging).\n3. Run:"
+                textSize = 15f
+                setTextColor(TEXT_MUTED)
+            })
+            addView(TextView(context).apply {
+                text = command
+                textSize = 14f
+                typeface = Typeface.MONOSPACE
+                setTextColor(TEXT_PRIMARY)
+                setTextIsSelectable(true)
+                setPadding(0, dp(12), 0, dp(12))
+            })
+            addView(TextView(context).apply {
+                text = "Slate TV checks the token with your server, saves it encrypted, and connects. " +
+                    "Only adb can send this; other apps on the TV can't."
+                textSize = 15f
+                setTextColor(TEXT_MUTED)
+            })
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Set up from a computer")
+            .setView(ScrollView(this).apply { addView(body) })
+            .setPositiveButton("OK", null)
+            .create().also(::styleDialog).show()
     }
 
     /** Loads (and caches) all entities, then calls [then] on the main thread. */

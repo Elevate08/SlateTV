@@ -64,11 +64,35 @@ adb shell cmd package set-home-activity --user current com.google.android.tvlaun
 
 Slate TV connects directly to your Home Assistant server. It needs no add-on or custom integration.
 
-1. **Create a token.** In Home Assistant, open your **Profile → Security → Long-lived access tokens → Create token**. Slate TV stores the token encrypted with the Android Keystore and sends it only to the server address you enter.
-2. **Connect.** Open **Slate TV Settings → SMART HOME → Home Assistant**. Enter the server address (for example `http://homeassistant.local:8123`) and the token, then select **Test connection**.
+1. **Pick the server.** Open **Slate TV Settings → SMART HOME → Home Assistant**. Servers found on your network (mDNS) appear as **Found: …** rows — select one. Otherwise select **Server address** and type it (for example `http://homeassistant.local:8123`).
+2. **Sign in.** Select **Sign in** and enter your Home Assistant username and password, plus your two-factor code if you use one. Slate TV creates a long-lived token named `Slate TV (<device name>)` (valid 10 years; you can revoke it under **Profile → Security**), stores it encrypted with the Android Keystore, and sends it only to that server. The password is never stored. Password sign-in needs the built-in **Home Assistant Local** login; if your server only offers SSO or trusted networks, use a token instead (below). Slate TV warns before signing in over plain `http://` to an address outside your local network.
+   - **Paste a token instead:** under **ADVANCED → Paste an access token**, enter a token from **Profile → Security → Long-lived access tokens → Create token**.
+   - **Set up from a computer:** see [Configure over ADB](#configure-over-adb).
 3. **Home screen controls (optional).** Under **Choose home controls**, pick up to 12 lights, switches, fans, covers, toggles (input booleans), scenes, or scripts. They appear as a row above the dock: press **Up** from the dock to reach them. Press **OK** to toggle a device or run a scene or script. Hold **OK** on a dimmable light to set its brightness.
 4. **Doorbells.** Select **Add doorbell**, pick the entity that fires when someone rings (a binary sensor, `event.*` entity, or button), then optionally pick a camera. When it rings, a card with the live camera feed appears in the corner of the screen. Press **Left/Right** to choose a reply, **OK** to send it, or **Back** to dismiss. The card closes on its own after the auto-dismiss time.
 5. **Quick replies.** Each reply always fires a `slatetv_quick_reply` event in Home Assistant. Its data includes `message`, `doorbell`, `camera`, and `source`. A reply can also run a script, scene, or button you pick. Scripts receive the same fields as variables, so a script can play `{{ message }}` on a doorbell speaker. To act on replies without a script, create an automation in Home Assistant with an **Event** trigger of type `slatetv_quick_reply`. Firing the event requires an admin user's token. Replies that run a script work with any user's token.
+
+### Configure over ADB
+
+To skip typing on the TV, create a long-lived token in Home Assistant (**Profile → Security**), save it in `token.txt`, connect adb to the TV (see [section 1](#1-install-slate-tv-via-google-play-or-adb)) and run:
+
+```bash
+adb shell am broadcast -a com.stasisstate.slatetv.action.HA_CONFIGURE \
+  -n com.stasisstate.slatetv/com.stasisstate.slatetv.connector.homeassistant.HaAdbConfigReceiver \
+  --es url https://your-ha:8123 --es token "$(cat token.txt)"
+```
+
+Slate TV checks the token against the server, saves it encrypted, and reconnects. It works right after a fresh install, without opening the app. The result line reports what happened:
+
+| `result=` | Meaning |
+|---|---|
+| `-1` | Saved and connected (`data` names the server and version) |
+| `2` | Bad arguments (missing or malformed `url` or `token`) |
+| `3` | Home Assistant rejected the token |
+| `4` | Server unreachable or timed out |
+| `5` | Other error |
+
+Only adb (or the system) can send this broadcast: the receiver requires `android.permission.DUMP`, which ordinary apps can't hold. Slate TV never logs the token, but Android keeps recent broadcasts, including their extras, in its broadcast history for a while; only adb and system apps can read it (`dumpsys activity broadcasts`). Repeated wrong tokens count as failed logins, and Home Assistant may ban the TV's IP if `ip_ban_enabled` is on.
 
 ### Show alerts over other apps
 
