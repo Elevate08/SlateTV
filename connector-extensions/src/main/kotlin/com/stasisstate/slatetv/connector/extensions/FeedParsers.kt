@@ -75,7 +75,7 @@ internal object ShelfFeedParser {
         val id = ExtensionUrlPolicy.text(obj.opt("id")?.takeIf { it is String || it is Number }?.toString(), 128)
             ?: ExtensionUrlPolicy.shortHash(title + (obj.opt("launchUri") ?: ""))
         val progress = (obj.opt("progressPercent") as? Number)?.toInt()?.takeIf { it in 0..100 } ?: -1
-        // launchActivityClassName is deliberately never read: cards can only name a package or a safe URI.
+        // JSON cards can only name a package or a public URI. Built-in activities and launch extras are excluded.
         return ShelfCard(
             id = id,
             title = title,

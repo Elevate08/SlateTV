@@ -11,6 +11,8 @@ import com.stasisstate.slatetv.shelf.HomeShelf
 import com.stasisstate.slatetv.shelf.launchPluginActivity
 import com.stasisstate.slatetv.shelf.launchShelfCard
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
 /** Outcome of trying to put focus on the first shelf card. */
@@ -63,8 +65,12 @@ internal class HomeShelfController(
     private var shelves = emptyList<HomeShelf>()
     private var selected: HomeShelf? = null
     private var pendingCardFocus = false
+    private var launchJob: Job? = null
     private val adapter = HomeShelfAdapter(context, scope, client) { card ->
-        selected?.takeIf { card in it.data.items }?.let { launchShelfCard(context, card) }
+        if (selected?.data?.items?.contains(card) == true) {
+            launchJob?.cancel()
+            launchJob = scope.launch { launchShelfCard(context, card) }
+        }
     }
 
     init {
@@ -142,6 +148,7 @@ internal class HomeShelfController(
     /** Drops any deferred first-card focus (focus moved elsewhere: overlay, Gallery Mode, dock). */
     fun clearPendingFocus() {
         pendingCardFocus = false
+        launchJob?.cancel()
     }
 
     private fun hasCards() = selected?.data?.items?.isNotEmpty() == true

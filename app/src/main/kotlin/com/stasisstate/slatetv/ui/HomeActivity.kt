@@ -110,8 +110,8 @@ class HomeActivity : AppCompatActivity() {
     private var tipJarCollectJob: Job? = null
     private var reloadAppsJob: Job? = null
 
-    private val homeRoleLauncher: ActivityResultLauncher<Intent> =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { onHomeRoleResult() }
+    private val homePickerLauncher: ActivityResultLauncher<Intent> =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { onHomePickerResult() }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val enterIdleRunnable = Runnable { enterIdleGalleryMode() }
@@ -216,15 +216,15 @@ class HomeActivity : AppCompatActivity() {
         exitIdleGalleryMode()
         backdropRenderer.ensureVisibleAfterWake()
         app.wallpaperManager.onResume()
-        if (skipNextResumeShelfRefresh) {
-            skipNextResumeShelfRefresh = false
-        } else {
+        val shelfRefreshStarted = skipNextResumeShelfRefresh
+        skipNextResumeShelfRefresh = false
+        if (!shelfRefreshStarted || settingsController.isVisible) {
             lifecycleScope.launch {
                 withContext(Dispatchers.IO) {
                     app.pluginRegistry.refreshExtensions()
                     shelfRegistry.refresh()
                 }
-                shelfManager.refresh()
+                if (!shelfRefreshStarted) shelfManager.refresh()
                 refreshSettingsIfOpen()
             }
         }
@@ -466,7 +466,6 @@ class HomeActivity : AppCompatActivity() {
             onTipSelected = { productId ->
                 tipJar.launch(this, productId)
             },
-            onSetDefaultHome = { requestDefaultHome() },
             onManageDefaultHome = { showDefaultLauncherDialog() },
             onClosed = {
                 hudContainer.visibility = View.VISIBLE
@@ -475,20 +474,14 @@ class HomeActivity : AppCompatActivity() {
         )
     }
 
-    private fun requestDefaultHome() {
-        val roleIntent = DefaultLauncherHelper.buildRequestHomeRoleIntent(this)
-        if (roleIntent == null) {
-            if (!DefaultLauncherHelper.openHomeSettingsFallback(this)) showDefaultLauncherDialog()
-            return
-        }
-        runCatching { homeRoleLauncher.launch(roleIntent) }.onFailure { showDefaultLauncherDialog() }
-    }
+    private fun launchHomePicker(intents: List<Intent>): Boolean =
+        intents.any { runCatching { homePickerLauncher.launch(it) }.isSuccess }
 
-    private fun onHomeRoleResult() {
-        if (DefaultLauncherHelper.isDefaultHome(this)) {
-            Toast.makeText(this, "Slate TV is now your Default Home launcher", Toast.LENGTH_SHORT).show()
-            refreshSettingsIfOpen()
-        } else if (!DefaultLauncherHelper.openHomeSettingsFallback(this)) {
+    private fun onHomePickerResult() {
+        refreshSettingsIfOpen()
+        if (DefaultLauncherHelper.getHomeStatus(this).isActive) {
+            Toast.makeText(this, "Slate TV is your Default Home launcher", Toast.LENGTH_SHORT).show()
+        } else {
             showDefaultLauncherDialog()
         }
     }
@@ -500,8 +493,11 @@ class HomeActivity : AppCompatActivity() {
     private fun showDefaultLauncherDialog() {
         DefaultLauncherHelper.showDefaultLauncherDialog(
             activity = this,
-            onRequestRole = { homeRoleLauncher.launch(it) },
-            onStatusChanged = { refreshSettingsIfOpen() },
+            onSetDefault = {
+                val roleIntent = DefaultLauncherHelper.buildRequestHomeRoleIntent(this)
+                launchHomePicker(listOfNotNull(roleIntent) + DefaultLauncherHelper.buildHomeSettingsFallbackIntents())
+            },
+            onOpenHomeSettings = { launchHomePicker(DefaultLauncherHelper.buildHomeSettingsFallbackIntents()) },
         )
     }
 

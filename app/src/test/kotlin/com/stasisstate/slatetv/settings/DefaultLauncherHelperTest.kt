@@ -27,40 +27,64 @@ class DefaultLauncherHelperTest {
     }
 
     @Test
-    fun resolutionIsAuthoritativeForDefaultHome() {
-        assertTrue(DefaultLauncherHelper.computeIsDefaultHome(self, self, roleHeld = true))
-        assertTrue(DefaultLauncherHelper.computeIsDefaultHome(self, self, roleHeld = false))
-        assertFalse(DefaultLauncherHelper.computeIsDefaultHome("com.example.launcher", self, roleHeld = true))
+    fun slateIsActiveWhenHomeResolvesToItRegardlessOfRole() {
+        assertTrue(DefaultLauncherHelper.computeHomeStatus(self, self, roleHeld = true).isActive)
+        assertTrue(DefaultLauncherHelper.computeHomeStatus(self, self, roleHeld = false).isActive)
     }
 
     @Test
-    fun roleCountsOnlyWhenResolutionIsUnset() {
-        assertTrue(DefaultLauncherHelper.computeIsDefaultHome("android", self, roleHeld = true))
-        assertFalse(DefaultLauncherHelper.computeIsDefaultHome("android", self, roleHeld = false))
-        assertFalse(DefaultLauncherHelper.computeIsDefaultHome(null, self, roleHeld = false))
+    fun anotherLauncherMayStillHandleHomeAfterSlateGetsTheRole() {
+        val status = DefaultLauncherHelper.computeHomeStatus("com.example.launcher", self, roleHeld = true)
+
+        assertFalse(status.isActive)
+        assertTrue(status.isOverridden)
+        assertTrue(DefaultLauncherHelper.statusText(status).contains("Home still opens com.example.launcher"))
+    }
+
+    @Test
+    fun heldRoleDoesNotMakeAnUnresolvedHomeActive() {
+        for (unresolved in listOf(null, "android")) {
+            val status = DefaultLauncherHelper.computeHomeStatus(unresolved, self, roleHeld = true)
+            assertFalse(status.isActive)
+            assertFalse(status.isOverridden)
+            assertNull(status.otherLauncherPackage)
+        }
+    }
+
+    @Test
+    fun adbTipChecksHomeBeforeDisablingTheOtherLauncher() {
+        val tip = DefaultLauncherHelper.adbTipText(self, "com.example.launcher")
+        val resolve = tip.indexOf("cmd package resolve-activity")
+        val disable = tip.indexOf("pm disable-user")
+        assertTrue(resolve >= 0 && disable > resolve)
+        assertTrue(tip.contains("pm enable --user current com.example.launcher"))
     }
 
     @Test
     fun adbCommandsAreFormattedAndBrandNeutral() {
         assertEquals(
-            "adb shell cmd package set-home-activity com.stasisstate.slatetv/.ui.HomeActivity",
+            "adb shell cmd package set-home-activity --user current com.stasisstate.slatetv/.ui.HomeActivity",
             DefaultLauncherHelper.adbSetHomeCommand(self),
         )
         assertEquals(
-            "adb shell pm disable-user --user 0 com.example.launcher",
+            "adb shell pm disable-user --user current com.example.launcher",
             DefaultLauncherHelper.adbDisableLauncherCommand("com.example.launcher"),
         )
         val tip = DefaultLauncherHelper.adbTipText(self, null)
-        assertTrue(tip.contains("<current_launcher_package>"))
+        assertFalse(tip.contains("pm disable-user"))
         val banned = listOf("nvidia", "shield", "projectivy", "google tv", "immich", "jellyfin")
-        val copy = (tip + DefaultLauncherHelper.statusText(false, null) + DefaultLauncherHelper.statusText(true, null)).lowercase()
-        banned.forEach { assertFalse("copy mentions $it", copy.contains(it)) }
+        banned.forEach { assertFalse("copy mentions $it", tip.lowercase().contains(it)) }
     }
 
     @Test
     fun statusTextReflectsState() {
-        assertTrue(DefaultLauncherHelper.statusText(true, null).contains("Slate TV is your Default Home"))
-        assertTrue(DefaultLauncherHelper.statusText(false, "com.example.launcher").contains("com.example.launcher"))
-        assertTrue(DefaultLauncherHelper.statusText(false, null).contains("No default Home"))
+        val active = DefaultLauncherHelper.computeHomeStatus(self, self, roleHeld = true)
+        val other = DefaultLauncherHelper.computeHomeStatus("com.example.launcher", self, roleHeld = false)
+        val unset = DefaultLauncherHelper.computeHomeStatus(null, self, roleHeld = false)
+
+        assertTrue(DefaultLauncherHelper.statusText(active).contains("Slate TV is your Default Home"))
+        assertFalse(other.isOverridden)
+        assertTrue(DefaultLauncherHelper.statusText(other).contains("com.example.launcher"))
+        assertTrue(DefaultLauncherHelper.statusText(unset).contains("No default Home"))
     }
 }

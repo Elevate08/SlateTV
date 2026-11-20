@@ -1,6 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.READ_TV_LISTINGS" />
     <queries>
+        <package android:name="com.google.android.tv" />
         <package android:name="com.android.tv" />
         <package android:name="org.jellyfin.androidtv" />
         <intent>
@@ -14,6 +15,10 @@
             android:theme="@style/Theme.AppCompat.NoActionBar" />
         <activity
             android:name=".LiveTvGuideActivity"
+            android:exported="false"
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
+        <activity
+            android:name=".AppChannelsSettingsActivity"
             android:exported="false"
             android:theme="@style/Theme.AppCompat.NoActionBar" />
     </application>

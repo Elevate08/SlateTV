@@ -53,6 +53,29 @@ class ShelfHostingTest {
     }
 
     @Test
+    fun foregroundRefreshAppliesAppChannelOptInsAlongsideLiveTvAndExtensions() = runTest {
+        val liveTv = Provider(BuiltInLiveTvShelfPlugin.PLUGIN_ID)
+        val preview = Provider("appchannel:preview:com.example.app:42")
+        val watchNext = Provider("appchannel:watch_next")
+        val extension = Provider("extshelf:news")
+        var appChannels = listOf(preview)
+        val registry = ShelfPluginRegistry { listOf(liveTv) + appChannels + extension }
+        val manager = ShelfManager(backgroundScope, registry, StandardTestDispatcher(testScheduler)) { emptySet() }
+
+        manager.start()
+        runCurrent()
+        assertEquals(listOf(liveTv, preview, extension), registry.plugins)
+        assertEquals(listOf(liveTv, preview, extension).map { it.metadata.id }, manager.shelves.value.map { it.plugin.id })
+
+        appChannels = listOf(watchNext)
+        manager.refresh()
+        runCurrent()
+        assertEquals(listOf(liveTv, watchNext, extension), registry.plugins)
+        assertEquals(listOf(liveTv, watchNext, extension).map { it.metadata.id }, manager.shelves.value.map { it.plugin.id })
+        manager.stop()
+    }
+
+    @Test
     fun headerSanitizationPreservesAuthAndDropsInvalidOrOversizedValues() {
         val values = sequenceOf(
             "Authorization" to "Bearer example",

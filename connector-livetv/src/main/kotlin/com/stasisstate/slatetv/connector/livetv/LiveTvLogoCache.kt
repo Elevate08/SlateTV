@@ -19,25 +19,19 @@ private const val MAX_CACHE_BYTES = 16L * 1024 * 1024
 private const val MAX_CACHE_FILES = 48
 private val logoName = Regex("[0-9a-f]{32}")
 
-/** Hash of server, user and API key; never contains or reveals the raw secret. */
-internal fun logoNamespace(config: LiveTvConfig, userId: String): String {
-    val digest = MessageDigest.getInstance("SHA-256")
-        .digest("${config.serverUrl}\u0000$userId\u0000${config.apiKey}\u0000${config.pinnedCertDer}".toByteArray())
-    return digest.take(16).joinToString("") { "%02x".format(it) }
-}
-
 /** `file:///…` URI string for a cached logo file. */
 internal fun fileUriString(file: File) = "file://${file.toURI().rawPath}"
 
 /**
- * Bounded on-disk cache for channel logos. Logos are downloaded in-process (Jellyfin images use the
- * pinned-TLS authenticated client, so tokens never leave the app) and exposed as plain `file://` URIs.
+ * Bounded on-disk cache for channel logos. Logos are read in-process from the TV Provider and exposed as plain
+ * `file://` URIs.
  */
-internal class LiveTvLogoCache(private val folder: File) {
+internal class LiveTvLogoCache(
+    private val folder: File,
+    private val maxFiles: Int = MAX_CACHE_FILES,
+    private val maxBytes: Long = MAX_CACHE_BYTES,
+) {
     private val cacheLock = Any()
-
-    suspend fun publishJellyfin(api: JellyfinApiClient, imageUrl: String, imageTag: String?, namespace: String): String? =
-        publishCached(imageUrl, imageTag, namespace) { api.downloadImageBytes(imageUrl, MAX_LOGO_BYTES) }
 
     /** Publishes a System Live Channels logo under a daily revision tag so changed station logos eventually refresh. */
     suspend fun publishSystemLogo(logoUri: String, now: Long = System.currentTimeMillis(), load: () -> ByteArray?): String? =
@@ -74,7 +68,7 @@ internal class LiveTvLogoCache(private val folder: File) {
                 .sortedBy { it.lastModified() }
                 .toMutableList()
             var totalBytes = cached.sumOf { it.length() }
-            while (cached.isNotEmpty() && (cached.size >= MAX_CACHE_FILES || totalBytes + bytes.size > MAX_CACHE_BYTES)) {
+            while (cached.isNotEmpty() && (cached.size >= maxFiles || totalBytes + bytes.size > maxBytes)) {
                 val oldest = cached.removeAt(0)
                 val size = oldest.length()
                 if (oldest.delete() || !oldest.exists()) totalBytes -= size else break
@@ -93,7 +87,7 @@ internal class LiveTvLogoCache(private val folder: File) {
     }
 
     companion object {
-        /** Credential-scoped cache key so a changed user/API key never reuses logos fetched under the old one. */
+        /** Namespaced cache key; the tag lets a changed logo (new revision) get a fresh file. */
         internal fun cacheKeyFor(namespace: String, imageUrl: String, imageTag: String?): String {
             val digest = MessageDigest.getInstance("SHA-256")
                 .digest("$namespace|$imageUrl|${imageTag.orEmpty()}".toByteArray())

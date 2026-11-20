@@ -29,14 +29,19 @@ class LiveTvShelfCardsTest {
         assertNull(card.launchUri)
     }
 
-    @Test fun jellyfinCardsOpenGuideOrJellyfinTv() {
-        val jf = channel.copy(id = "abc")
-        val inGuide = jellyfinCard(jf, null, true, "host.pkg", guide, now)
-        assertEquals(guide, inGuide.launchActivityClassName)
-        assertEquals(mapOf(BuiltInLiveTvShelfPlugin.EXTRA_CHANNEL_ID to "abc"), inGuide.launchExtras)
-        val launch = jellyfinCard(jf, null, false, "host.pkg", guide, now)
-        assertEquals("org.jellyfin.androidtv", launch.launchPackageName)
-        assertNull(launch.launchActivityClassName)
+    @Test fun nonNumericChannelIdFallsBackToTheGuide() {
+        val card = systemCard(channel.copy(id = "abc"), null, inGuide = false, packageName = "host.pkg", guideActivity = guide, now = now)
+        assertEquals(guide, card.launchActivityClassName)
+        assertEquals(mapOf(BuiltInLiveTvShelfPlugin.EXTRA_CHANNEL_ID to "abc"), card.launchExtras)
+        assertNull(card.launchUri)
+    }
+
+    @Test fun unsetOrLegacyTapActionLaunchesDirectlyAndSavedGuideIsRespected() {
+        assertEquals(CardTapAction.LAUNCH_CHANNEL, LiveTvConfig().cardTapAction)
+        for (saved in listOf(null, "LAUNCH_JELLYFIN", "LAUNCH_CHANNEL", "unknown")) {
+            assertEquals(CardTapAction.LAUNCH_CHANNEL, parseCardTapAction(saved))
+        }
+        assertEquals(CardTapAction.OPEN_GUIDE, parseCardTapAction("OPEN_GUIDE"))
     }
 
     @Test fun constantsMatchContract() {

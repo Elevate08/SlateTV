@@ -15,6 +15,8 @@ import com.stasisstate.slatetv.apps.AppRepository
 import com.stasisstate.slatetv.billing.TipJarState
 import com.stasisstate.slatetv.connector.extensions.ExtensionRegistry
 import com.stasisstate.slatetv.connector.extensions.ExtensionsManagerActivity
+import com.stasisstate.slatetv.connector.livetv.AppChannelsSettingsActivity
+import com.stasisstate.slatetv.connector.livetv.BuiltInAppChannelsProvider
 import com.stasisstate.slatetv.settings.DefaultLauncherHelper
 import com.stasisstate.slatetv.settings.LauncherPreferences
 import com.stasisstate.slatetv.settings.LauncherSettings
@@ -44,7 +46,6 @@ internal class SettingsDrawerController(
     private val extensionRegistry: ExtensionRegistry,
     private val onClearCache: () -> Unit,
     private val onTipSelected: (productId: String) -> Unit,
-    private val onSetDefaultHome: () -> Unit,
     private val onManageDefaultHome: () -> Unit,
     private val onClosed: () -> Unit,
 ) {
@@ -101,8 +102,8 @@ internal class SettingsDrawerController(
 
         val memMb = currentAppRamMb()
         val cacheMb = diskCache.totalSizeBytes() / (1024.0 * 1024.0)
-        val isDefaultHome = DefaultLauncherHelper.isDefaultHome(context)
-        val homeState = if (isDefaultHome) "Default Home" else "Not Default Home"
+        val homeStatus = DefaultLauncherHelper.getHomeStatus(context)
+        val homeState = if (homeStatus.isActive) "Default Home" else "Not Default Home"
         statusSummaryView.text = "$homeState · ${memMb} MB RAM · %.1f MB cache · $lastSyncStatus".format(cacheMb)
 
         itemsContainer.removeAllViews()
@@ -134,7 +135,10 @@ internal class SettingsDrawerController(
         }
 
         addSectionHeader("HOME SHELVES (LIVE TV / GUIDES)")
-        for (plugin in shelfRegistry.plugins) {
+        val (appChannels, otherShelves) = shelfRegistry.plugins.partition {
+            it.metadata.id.startsWith(BuiltInAppChannelsProvider.PLUGIN_ID_PREFIX)
+        }
+        for (plugin in otherShelves) {
             val metadata = plugin.metadata
             val enabled = !shelfRegistry.isDisabled(metadata.id, settings.disabledShelfPluginIds)
             addRow(metadata.name, if (enabled) "Enabled" else "Disabled", "shelf:${metadata.id}") {
@@ -155,6 +159,14 @@ internal class SettingsDrawerController(
                     launchPluginActivity(context, metadata.packageName, activity)
                 }
             }
+        }
+        val appChannelsSubtitle = when (val count = appChannels.size) {
+            0 -> "Choose preview channels & Watch Next from installed apps"
+            1 -> "1 channel shelf active — tap to customize"
+            else -> "$count channel shelves active — tap to customize"
+        }
+        addRow("App Channels (Installed Apps)", appChannelsSubtitle, "app-channels") {
+            launchPluginActivity(context, context.packageName, AppChannelsSettingsActivity::class.java.name)
         }
 
         addSectionHeader("EXTENSIONS")
@@ -228,14 +240,14 @@ internal class SettingsDrawerController(
 
         addRow(
             "Default Home Launcher",
-            if (isDefaultHome) {
-                "Active — Slate TV is your default Home app (tap to manage)"
-            } else {
-                "Not set — Tap to set Slate TV as your default Home launcher"
+            when {
+                homeStatus.isActive -> "Active"
+                homeStatus.isOverridden -> "Home still opens another launcher. View setup instructions."
+                else -> "Set up Slate TV as your Home launcher"
             },
-        ) {
-            if (isDefaultHome) onManageDefaultHome() else onSetDefaultHome()
-        }
+            "default-home",
+            onClick = onManageDefaultHome,
+        )
 
         addRow(
             "Include Sideloaded Phone Apps",

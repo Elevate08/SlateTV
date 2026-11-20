@@ -28,28 +28,28 @@ adb shell pm grant com.stasisstate.slatetv android.permission.READ_TV_LISTINGS
 Configure everything directly inside **Slate TV Settings** (zero extra app icons cluttering your launcher):
 
 - **Background Sources:** Open **Slate TV Settings → BACKGROUND SOURCE** to choose **Ambient Slate**, **Local Photos**, **Immich Photos** (tap **Configure Immich Photos** for LAN auto-discovery, direct sign-in, or QR phone pairing with TOFU TLS certificate pinning), or any installed JSON photo feed extension.
-- **Live TV & Guide Shelf:** Open **Slate TV Settings → HOME SHELVES** and tap **Configure Live TV & Guide**. Uses Android TV's built-in **System Live Channels** EPG by default (no login required after granting `READ_TV_LISTINGS`), or optionally pairs with a media server via LAN discovery and Quick Connect. Auto-hides whenever unconfigured or unavailable.
+- **Live TV & Guide Shelf:** Open **Slate TV Settings → HOME SHELVES** and tap **Configure Live TV & Guide**. Uses Android TV's built-in **System Live Channels** EPG only (no login; just grant `READ_TV_LISTINGS`). Jellyfin content (Next Up, Latest Media, Watch Next) appears through **App Channels** when the Jellyfin app is installed, with no Jellyfin sign-in in Slate TV. Auto-hides whenever unconfigured or unavailable.
 - **Zero-Code JSON Extensions:** Open **Slate TV Settings → EXTENSIONS → Manage JSON Extensions** to add any HTTP/JSON photo feed or home shelf manifest via **Phone QR Code** or direct URL (with explicit on-TV confirmation).
 
 ---
 
 ## 3. Setting Slate TV as Default Home Launcher
 
-1. **In-App (Recommended):** Open **Slate TV Settings → APPS & SYSTEM → Default Home Launcher** and choose **Set Slate TV as Default Home** (uses Android's system Home role picker / Default Home Apps settings).
+1. Open **Slate TV Settings → APPS & SYSTEM → Default Home Launcher → Set Slate TV as Default Home**. Select **Slate TV** in the Android picker and confirm **Set as default**. Press Home to verify which launcher opens.
 2. **If you previously used an Accessibility-based launcher:** Disable its Accessibility Service under **Android TV Settings > Device Preferences > Accessibility**.
-3. **Optional ADB Fallback** (for Android TV builds that hide the system Home picker or lock the stock launcher):
+3. If the picker is unavailable or Home still opens the stock launcher, connect over ADB and check which app handles Home after setting Slate TV as the preferred launcher.
    ```bash
-   # Verify Slate TV opens cleanly first
-   adb shell monkey -p com.stasisstate.slatetv -c android.intent.category.LEANBACK_LAUNCHER 1
-
-   # Set Slate TV as default Home activity (and optionally disable the stock launcher for user 0)
-   adb shell cmd package set-home-activity com.stasisstate.slatetv/.ui.HomeActivity
-   adb shell pm disable-user --user 0 com.google.android.tvlauncher
+   adb shell cmd package set-home-activity --user current com.stasisstate.slatetv/.ui.HomeActivity
+   adb shell cmd package resolve-activity --brief --user current --query-flags 65536 -a android.intent.action.MAIN -c android.intent.category.HOME
+   ```
+4. On NVIDIA SHIELD, Android TV Home can keep handling the Home button after Android selects Slate TV. If the check still reports `com.google.android.tvlauncher/.MainActivity`, disable Android TV Home for the current user, then press Home again.
+   ```bash
+   adb shell pm disable-user --user current com.google.android.tvlauncher
    ```
 
-### Instant Rollback (Re-enable Stock Android TV Launcher)
+### Restore Android TV Home on NVIDIA SHIELD
 
 ```bash
-adb shell pm enable com.google.android.tvlauncher
-adb shell cmd package set-home-activity com.google.android.tvlauncher/.MainActivity
+adb shell pm enable --user current com.google.android.tvlauncher
+adb shell cmd package set-home-activity --user current com.google.android.tvlauncher/.MainActivity
 ```

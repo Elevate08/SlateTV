@@ -15,6 +15,8 @@ import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import com.stasisstate.slatetv.NetworkClientFactory.executeCancellable
 import com.stasisstate.slatetv.R
+import com.stasisstate.slatetv.connector.livetv.BuiltInLiveTvShelfPlugin.Companion.EXTRA_APP_CHANNEL_PACKAGE
+import com.stasisstate.slatetv.connector.livetv.isPublicInternetAddress
 import com.stasisstate.slatetv.plugin.api.ShelfCard
 import com.stasisstate.slatetv.wallpaper.BitmapLoader
 import kotlinx.coroutines.CancellationException
@@ -26,6 +28,8 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.io.IOException
+import java.net.Proxy
 
 internal class HomeShelfAdapter(
     private val context: Context,
@@ -36,7 +40,24 @@ internal class HomeShelfAdapter(
     override fun areItemsTheSame(oldItem: ShelfCard, newItem: ShelfCard) = oldItem.id == newItem.id
     override fun areContentsTheSame(oldItem: ShelfCard, newItem: ShelfCard) = oldItem == newItem
 }) {
-    private data class ImageKey(val uri: String, val headers: Map<String, String>)
+    private data class ImageKey(val uri: String, val headers: Map<String, String>, val fromAppChannel: Boolean)
+
+    private val appChannelImageClient by lazy {
+        client.newBuilder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .addNetworkInterceptor { chain ->
+                val request = chain.request()
+                val route = chain.connection()?.route()
+                // Third-party app-channel web artwork must use HTTPS on a public internet address (local apps use content://).
+                if (!request.url.isHttps || route?.proxy?.type() != Proxy.Type.DIRECT ||
+                    route.socketAddress.address?.isPublicInternetAddress() != true
+                ) {
+                    throw IOException("App channel web artwork requires HTTPS on a public address")
+                }
+                chain.proceed(request)
+            }.build()
+    }
 
     private val cache = object : LruCache<ImageKey, Bitmap>(8 * 1024 * 1024) {
         override fun sizeOf(key: ImageKey, value: Bitmap) = value.allocationByteCount
@@ -57,7 +78,7 @@ internal class HomeShelfAdapter(
         holder.progress.progress = card.progressPercent.coerceIn(0, 100)
         holder.itemView.setOnClickListener { onClick(card) }
 
-        val key = ImageKey(card.imageUri ?: return, card.imageHeaders)
+        val key = ImageKey(card.imageUri ?: return, card.imageHeaders, EXTRA_APP_CHANNEL_PACKAGE in card.launchExtras)
         val cached = cache.get(key)
         if (cached != null) {
             holder.logo.setImageBitmap(cached)
@@ -85,7 +106,8 @@ internal class HomeShelfAdapter(
                     val request = Request.Builder().url(key.uri).apply {
                         key.headers.forEach { (name, value) -> header(name, value) }
                     }.build()
-                    client.executeCancellable(request).use { response ->
+                    val imageClient = if (key.fromAppChannel) appChannelImageClient else client
+                    imageClient.executeCancellable(request).use { response ->
                         val body = response.body ?: return@use null
                         if (!response.isSuccessful || body.contentLength() > MAX_IMAGE_BYTES) return@use null
                         val source = body.source()

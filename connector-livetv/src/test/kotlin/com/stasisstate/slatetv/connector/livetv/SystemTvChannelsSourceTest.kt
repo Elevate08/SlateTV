@@ -34,23 +34,6 @@ class SystemTvChannelsSourceTest {
 
     private fun load(reader: FakeReader) = SystemTvChannelsSource(reader) { now }.load()
 
-    /** Minimal in-memory [Cursor] backed by a dynamic proxy (no Robolectric needed). */
-    private fun cursor(columns: List<String>, rows: List<Map<String, Any?>>): Cursor {
-        var position = -1
-        return Proxy.newProxyInstance(Cursor::class.java.classLoader, arrayOf(Cursor::class.java)) { _, method, args ->
-            when (method.name) {
-                "moveToNext" -> (++position < rows.size)
-                "getColumnIndex" -> columns.indexOf(args[0] as String)
-                "isNull" -> rows[position][columns[args[0] as Int]] == null
-                "getLong" -> (rows[position][columns[args[0] as Int]] as Number).toLong()
-                "getInt" -> (rows[position][columns[args[0] as Int]] as Number).toInt()
-                "getString" -> rows[position][columns[args[0] as Int]]?.toString()
-                "close" -> Unit
-                else -> throw UnsupportedOperationException(method.name)
-            }
-        } as Cursor
-    }
-
     @Test fun filtersPreviewAndNonBrowsableChannels() {
         val reader = FakeReader(channels = {
             listOf(
@@ -142,7 +125,7 @@ class SystemTvChannelsSourceTest {
             TvContract.Channels._ID, TvContract.Channels.COLUMN_DISPLAY_NUMBER, TvContract.Channels.COLUMN_DISPLAY_NAME,
             TvContract.Channels.COLUMN_PACKAGE_NAME, TvContract.Channels.COLUMN_TYPE, TvContract.Channels.COLUMN_BROWSABLE,
         )
-        val rows = parseChannelRows(cursor(columns, listOf(
+        val rows = parseChannelRows(tvCursor(columns, listOf(
             mapOf(columns[0] to 7L, columns[1] to "7.1", columns[2] to "KABC", columns[3] to "com.example.tuner",
                 columns[4] to "TYPE_ATSC_T", columns[5] to 1),
             mapOf(columns[0] to 8L, columns[1] to null, columns[2] to "Preview", columns[3] to null,
@@ -162,7 +145,7 @@ class SystemTvChannelsSourceTest {
             TvContract.Programs.COLUMN_SHORT_DESCRIPTION, TvContract.Programs.COLUMN_LONG_DESCRIPTION,
             TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS, TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS,
         )
-        val rows = parseProgramRows(cursor(columns, listOf(
+        val rows = parseProgramRows(tvCursor(columns, listOf(
             mapOf(columns[0] to 7L, columns[1] to "News", columns[2] to "Ep", columns[3] to null,
                 columns[4] to "Long text", columns[5] to 1000L, columns[6] to 2000L),
             mapOf(columns[0] to 7L, columns[1] to "Bad", columns[5] to null, columns[6] to 2000L), // missing start → skipped
@@ -183,7 +166,7 @@ class SystemTvChannelsSourceTest {
         val reader = ContentResolverTvListingsReader(
             tvQuery = TvQuery { uri, _, selection, args, sort ->
                 calls += Call(uri, selection, args, sort)
-                cursor(programColumns, listOf(mapOf(
+                tvCursor(programColumns, listOf(mapOf(
                     programColumns[0] to built.last().first, programColumns[1] to "T", programColumns[5] to 1L, programColumns[6] to 2L,
                 )))
             },
@@ -205,4 +188,21 @@ class SystemTvChannelsSourceTest {
         assertThrows(SecurityException::class.java) { reader.channels() }
         assertEquals(SystemTvResult.NeedsPermission, SystemTvChannelsSource(reader) { now }.load())
     }
+}
+
+/** Minimal in-memory [Cursor] backed by a dynamic proxy (no Robolectric needed). */
+internal fun tvCursor(columns: List<String>, rows: List<Map<String, Any?>>): Cursor {
+    var position = -1
+    return Proxy.newProxyInstance(Cursor::class.java.classLoader, arrayOf(Cursor::class.java)) { _, method, args ->
+        when (method.name) {
+            "moveToNext" -> (++position < rows.size)
+            "getColumnIndex" -> columns.indexOf(args[0] as String)
+            "isNull" -> rows[position][columns[args[0] as Int]] == null
+            "getLong" -> (rows[position][columns[args[0] as Int]] as Number).toLong()
+            "getInt" -> (rows[position][columns[args[0] as Int]] as Number).toInt()
+            "getString" -> rows[position][columns[args[0] as Int]]?.toString()
+            "close" -> Unit
+            else -> throw UnsupportedOperationException(method.name)
+        }
+    } as Cursor
 }

@@ -2,11 +2,12 @@ package com.stasisstate.slatetv.shelf
 
 import android.content.Context
 import com.stasisstate.slatetv.connector.extensions.ExtensionRegistry
+import com.stasisstate.slatetv.connector.livetv.BuiltInAppChannelsProvider
 import com.stasisstate.slatetv.connector.livetv.BuiltInLiveTvShelfPlugin
 import com.stasisstate.slatetv.plugin.api.ShelfPlugin
 
 /**
- * Registry of built-in home shelves (Live TV & Guide) and user-installed zero-code JSON shelf extensions.
+ * Registry of built-in Home shelves and installed JSON shelf extensions.
  */
 internal class ShelfPluginRegistry(private val discover: () -> List<ShelfPlugin>) {
     constructor(
@@ -21,6 +22,7 @@ internal class ShelfPluginRegistry(private val discover: () -> List<ShelfPlugin>
 
     val plugins: List<ShelfPlugin> get() = snapshot.plugins
 
+    @Synchronized
     fun refresh(): List<ShelfPlugin> {
         val found = discover()
         val unique = found.distinctBy { it.metadata.id }
@@ -65,8 +67,10 @@ private fun discovery(
     extensionRegistry: ExtensionRegistry,
 ): () -> List<ShelfPlugin> {
     val builtInLiveTv = BuiltInLiveTvShelfPlugin(context)
+    val builtInAppChannels = BuiltInAppChannelsProvider(context)
     return {
+        val appChannels = runCatching { builtInAppChannels.shelfPlugins() }.getOrDefault(emptyList())
         val jsonExtensions = runCatching { extensionRegistry.shelfPlugins() }.getOrDefault(emptyList())
-        listOf<ShelfPlugin>(builtInLiveTv) + jsonExtensions
+        listOf<ShelfPlugin>(builtInLiveTv) + appChannels + jsonExtensions
     }
 }

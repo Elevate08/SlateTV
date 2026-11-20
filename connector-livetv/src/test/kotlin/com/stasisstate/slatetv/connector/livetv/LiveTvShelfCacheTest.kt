@@ -19,7 +19,7 @@ import java.io.IOException
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class LiveTvShelfCacheTest {
-    private val config = LiveTvConfig(serverUrl = "https://jf.example/", apiKey = "key")
+    private val config = LiveTvConfig(maxHomeChannels = 12)
     private val good = ShelfData(true, "Live TV · On Now", emptyList())
     private val good2 = ShelfData(true, "Live TV · Updated", emptyList())
     private val noChannels = ShelfData(false, "Live TV", emptyList(), "No Live TV channels found.")
@@ -174,7 +174,7 @@ class LiveTvShelfCacheTest {
         fetcher.responses += { good }
         cache.get(config, fetcher::fetch)
         fetcher.responses += { throw IOException("down") }
-        assertNull(cache.get(config.copy(serverUrl = "https://other.example/"), fetcher::fetch))
+        assertNull(cache.get(config.copy(maxHomeChannels = 20), fetcher::fetch))
         assertEquals(2, fetcher.calls)
         scope.cancel()
     }

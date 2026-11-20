@@ -97,10 +97,10 @@ class BuiltInConnectorsIntegrationTest {
             )
         }
 
-        val jellyfinCard = ShelfCard(id = "jf", title = "Channel", launchPackageName = "org.jellyfin.androidtv")
+        val externalCard = ShelfCard(id = "ext", title = "App", launchPackageName = "com.example.tvapp")
         assertEquals(
-            ShelfLaunchDecision.ExternalPackage("org.jellyfin.androidtv"),
-            decideShelfCardLaunch(host, jellyfinCard),
+            ShelfLaunchDecision.ExternalPackage("com.example.tvapp"),
+            decideShelfCardLaunch(host, externalCard),
         )
 
         val hostPkgCard = ShelfCard(id = "self", title = "Self", launchPackageName = host)

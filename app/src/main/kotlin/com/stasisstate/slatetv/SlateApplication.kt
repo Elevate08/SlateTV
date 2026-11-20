@@ -17,6 +17,7 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import java.io.File
 
@@ -55,6 +56,10 @@ class SlateApplication : Application() {
         dockPreferences = DockPreferences(this)
         appRepository = AppRepository(this)
         extensionRegistry = ExtensionRegistry(this)
+        // One-time cleanup of the removed Jellyfin server Live TV source (credentials, key alias, cached logos).
+        appScope.launch(Dispatchers.IO) {
+            runCatching { com.stasisstate.slatetv.connector.livetv.LiveTvConfigStore(this@SlateApplication).migrateLegacyState() }
+        }
 
         pluginRegistry = PluginRegistry(
             context = this,

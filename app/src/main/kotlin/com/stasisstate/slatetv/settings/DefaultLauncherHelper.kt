@@ -27,6 +27,14 @@ object DefaultLauncherHelper {
     /** Package reported by the resolver stub when no default Home app is chosen. */
     private const val RESOLVER_STUB_PACKAGE = "android"
 
+    internal data class HomeStatus(
+        val isActive: Boolean,
+        val otherLauncherPackage: String?,
+        val roleHeld: Boolean,
+    ) {
+        val isOverridden: Boolean get() = roleHeld && otherLauncherPackage != null
+    }
+
     // ---- Pure, unit-testable helpers -------------------------------------------------------
 
     /** Settings actions to try, in order, when the role request is unavailable or cancelled. */
@@ -35,7 +43,7 @@ object DefaultLauncherHelper {
         Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS,
     )
 
-    fun buildHomeSettingsFallbackIntents(): List<Intent> =
+    internal fun buildHomeSettingsFallbackIntents(): List<Intent> =
         homeSettingsFallbackActions().map { Intent(it) }
 
     /** Returns the package if it names a real launcher, or null for empty / the "android" stub. */
@@ -43,31 +51,39 @@ object DefaultLauncherHelper {
         pkg?.takeIf { it.isNotBlank() && it != RESOLVER_STUB_PACKAGE }
 
     /**
-     * Resolution of CATEGORY_HOME is what actually decides where the Home button goes, so it is
-     * authoritative. A held role only counts when resolution gives no concrete answer.
+     * Some TVs resolve CATEGORY_HOME to a higher-priority preinstalled launcher even after
+     * granting Slate TV the Home role. Check both signals so the UI can explain the mismatch.
      */
-    internal fun computeIsDefaultHome(resolvedHomePackage: String?, selfPackage: String, roleHeld: Boolean): Boolean {
+    internal fun computeHomeStatus(resolvedHomePackage: String?, selfPackage: String, roleHeld: Boolean): HomeStatus {
         val resolved = normalizeHomePackage(resolvedHomePackage)
-        return if (resolved != null) resolved == selfPackage else roleHeld
+        return HomeStatus(resolved == selfPackage, resolved?.takeUnless { it == selfPackage }, roleHeld)
     }
 
     internal fun adbSetHomeCommand(selfPackage: String): String =
-        "adb shell cmd package set-home-activity $selfPackage/.ui.HomeActivity"
+        "adb shell cmd package set-home-activity --user current $selfPackage/.ui.HomeActivity"
 
     internal fun adbDisableLauncherCommand(currentHomePackage: String): String =
-        "adb shell pm disable-user --user 0 $currentHomePackage"
+        "adb shell pm disable-user --user current $currentHomePackage"
+
+    private const val ADB_RESOLVE_HOME = "adb shell cmd package resolve-activity --brief --user current " +
+        "--query-flags 65536 -a android.intent.action.MAIN -c android.intent.category.HOME"
 
     internal fun adbTipText(selfPackage: String, currentHomePackage: String?): String = buildString {
-        append("If your TV hides the Home picker or cancels the request, connect over ADB and run:\n\n")
+        append("Connect to your TV over ADB. Set Slate TV as Home and check which launcher will open.\n\n")
         append(adbSetHomeCommand(selfPackage))
-        append("\n\nIf the current launcher still takes over, disable it for your user:\n\n")
-        append(adbDisableLauncherCommand(currentHomePackage ?: "<current_launcher_package>"))
-        append("\n\nRe-enable it any time with: adb shell pm enable <package>")
+        append("\n\n$ADB_RESOLVE_HOME")
+        if (currentHomePackage != null) {
+            append("\n\nIf the check still reports $currentHomePackage, disable that launcher and check Home again.\n\n")
+            append(adbDisableLauncherCommand(currentHomePackage))
+            append("\n\nTo re-enable it, run\n\nadb shell pm enable --user current $currentHomePackage")
+        }
     }
 
-    internal fun statusText(isDefault: Boolean, currentHomePackage: String?): String = when {
-        isDefault -> "Slate TV is your Default Home launcher."
-        currentHomePackage != null -> "Current Home app: $currentHomePackage"
+    internal fun statusText(status: HomeStatus): String = when {
+        status.isActive -> "Slate TV is your Default Home launcher."
+        status.isOverridden -> "Android selected Slate TV. Home still opens ${status.otherLauncherPackage}. See the ADB instructions below."
+        status.roleHeld -> "Android selected Slate TV. The Home activity could not be confirmed."
+        status.otherLauncherPackage != null -> "Home currently opens ${status.otherLauncherPackage}."
         else -> "No default Home app is set."
     }
 
@@ -94,14 +110,10 @@ object DefaultLauncherHelper {
         }.getOrNull()
     }
 
-    fun isDefaultHome(context: Context): Boolean =
-        computeIsDefaultHome(resolveHomeActivityPackage(context), context.packageName, isRoleHeld(context))
+    internal fun getHomeStatus(context: Context): HomeStatus =
+        computeHomeStatus(resolveHomeActivityPackage(context), context.packageName, isRoleHeld(context))
 
-    /** The package currently handling Home (excluding the unset "android" chooser stub). */
-    fun resolveCurrentHomePackage(context: Context): String? =
-        normalizeHomePackage(resolveHomeActivityPackage(context))
-
-    fun buildRequestHomeRoleIntent(context: Context): Intent? {
+    internal fun buildRequestHomeRoleIntent(context: Context): Intent? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
         return runCatching {
             val rm = roleManager(context) ?: return null
@@ -113,34 +125,15 @@ object DefaultLauncherHelper {
         }.getOrNull()
     }
 
-    private fun launchFirstResolvable(context: Context, intents: List<Intent>): Boolean {
-        for (intent in intents) {
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            val resolvable = runCatching { intent.resolveActivity(context.packageManager) != null }.getOrDefault(false)
-            if (!resolvable) continue
-            if (runCatching { context.startActivity(intent) }.isSuccess) return true
-        }
-        return false
-    }
-
-    fun openHomeSettingsFallback(context: Context): Boolean =
-        launchFirstResolvable(context, buildHomeSettingsFallbackIntents())
-
-    fun openCurrentLauncherAppInfo(context: Context): Boolean {
-        val pkg = resolveCurrentHomePackage(context)?.takeIf { it != context.packageName } ?: return false
-        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$pkg"))
-        return launchFirstResolvable(context, listOf(intent))
-    }
-
     // ---- Dialog -----------------------------------------------------------------------------
 
-    fun showDefaultLauncherDialog(
+    internal fun showDefaultLauncherDialog(
         activity: AppCompatActivity,
-        onRequestRole: (Intent) -> Unit,
-        onStatusChanged: () -> Unit,
+        onSetDefault: () -> Boolean,
+        onOpenHomeSettings: () -> Boolean,
     ) {
-        val isDefault = isDefaultHome(activity)
-        val currentPkg = resolveCurrentHomePackage(activity)?.takeIf { it != activity.packageName }
+        val status = getHomeStatus(activity)
+        val currentPkg = status.otherLauncherPackage
         val dp = activity.resources.displayMetrics.density
         fun dp(v: Int) = (v * dp).toInt()
 
@@ -181,25 +174,40 @@ object DefaultLauncherHelper {
         }
 
         root.addView(text("Default Home Launcher", 20f, "#F8FAFC", 6))
-        root.addView(text(statusText(isDefault, currentPkg), 14f, "#94A3B8", 14))
+        root.addView(text(statusText(status), 14f, "#94A3B8", 14))
 
-        if (!isDefault) {
+        val launchError = text("", 14f, "#F8FAFC", 8).apply { visibility = View.GONE }
+        root.addView(launchError)
+
+        if (!status.isActive && !status.roleHeld) {
             addButton("Set Slate TV as Default Home") {
-                dlg.dismiss()
-                val roleIntent = buildRequestHomeRoleIntent(activity)
-                if (roleIntent != null) onRequestRole(roleIntent) else openHomeSettingsFallback(activity)
+                if (onSetDefault()) {
+                    dlg.dismiss()
+                } else {
+                    launchError.text = "This TV could not open a Home picker. See the ADB instructions below."
+                    launchError.visibility = View.VISIBLE
+                }
             }
         }
         addButton("Open Default Home App Settings") {
-            dlg.dismiss()
-            openHomeSettingsFallback(activity)
-        }
-        if (currentPkg != null) {
-            addButton("Open Current Launcher App Info") {
+            if (onOpenHomeSettings()) {
                 dlg.dismiss()
-                openCurrentLauncherAppInfo(activity)
+            } else {
+                launchError.text = "This TV could not open Home settings. See the ADB instructions below."
+                launchError.visibility = View.VISIBLE
             }
-            root.addView(text("Tip: in App Info, choose \"Clear defaults\" so Slate TV can be picked next time Home is pressed.", 12f, "#64748B", 8))
+        }
+        if (currentPkg != null && !status.isOverridden) {
+            addButton("Open Current Launcher App Info") {
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$currentPkg"))
+                if (runCatching { activity.startActivity(intent) }.isSuccess) {
+                    dlg.dismiss()
+                } else {
+                    launchError.text = "This TV could not open the current launcher's App Info."
+                    launchError.visibility = View.VISIBLE
+                }
+            }
+            root.addView(text("Choose Clear defaults in App Info if your TV offers it.", 12f, "#64748B", 8))
         }
 
         val adbText = text(adbTipText(activity.packageName, currentPkg), 12f, "#94A3B8", 8).apply {
@@ -207,11 +215,11 @@ object DefaultLauncherHelper {
             visibility = View.GONE
             setTextIsSelectable(false)
         }
-        val adbToggle = addButton("Optional ADB Tip  ▸") {}
+        val adbToggle = addButton("Show ADB Instructions  ▸") {}
         adbToggle.setOnClickListener {
             val show = adbText.visibility != View.VISIBLE
             adbText.visibility = if (show) View.VISIBLE else View.GONE
-            adbToggle.text = if (show) "Optional ADB Tip  ▾" else "Optional ADB Tip  ▸"
+            adbToggle.text = if (show) "Hide ADB Instructions  ▾" else "Show ADB Instructions  ▸"
         }
         root.addView(adbText)
 
@@ -223,8 +231,7 @@ object DefaultLauncherHelper {
         }
         dlg.setContentView(scroll)
         dlg.window?.setLayout(dp(560), ViewGroup.LayoutParams.WRAP_CONTENT)
-        dlg.setOnDismissListener { onStatusChanged() }
         dlg.show()
-        firstButton?.requestFocus()
+        (if (status.isOverridden) adbToggle else firstButton)?.requestFocus()
     }
 }

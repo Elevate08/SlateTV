@@ -8,18 +8,16 @@ import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
 
 class LiveTvLogoProxyTest {
-    private val url = "https://jf.local/Items/1/Images/Primary"
+    private val url = "content://android.media.tv/channel/1/logo"
 
-    @Test fun credentialOrUserChangesProduceDistinctCacheKeys() {
-        val base = LiveTvConfig("https://jf.local", "key-a")
-        val sameKey = LiveTvLogoCache.cacheKeyFor(logoNamespace(base, "user1"), url, "tag")
-        assertEquals(sameKey, LiveTvLogoCache.cacheKeyFor(logoNamespace(base, "user1"), url, "tag"))
-        val otherKey = LiveTvLogoCache.cacheKeyFor(logoNamespace(base.copy(apiKey = "key-b"), "user1"), url, "tag")
-        val otherUser = LiveTvLogoCache.cacheKeyFor(logoNamespace(base, "user2"), url, "tag")
-        val otherServer = LiveTvLogoCache.cacheKeyFor(logoNamespace(base.copy(serverUrl = "https://other"), "user1"), url, "tag")
-        assertEquals(4, setOf(sameKey, otherKey, otherUser, otherServer).size)
+    @Test fun namespaceUrlOrTagChangesProduceDistinctCacheKeys() {
+        val sameKey = LiveTvLogoCache.cacheKeyFor("system-live-channels", url, "tag")
+        assertEquals(sameKey, LiveTvLogoCache.cacheKeyFor("system-live-channels", url, "tag"))
+        val otherNamespace = LiveTvLogoCache.cacheKeyFor("other", url, "tag")
+        val otherUrl = LiveTvLogoCache.cacheKeyFor("system-live-channels", "content://android.media.tv/channel/2/logo", "tag")
+        val otherTag = LiveTvLogoCache.cacheKeyFor("system-live-channels", url, "tag2")
+        assertEquals(4, setOf(sameKey, otherNamespace, otherUrl, otherTag).size)
         assertTrue(Regex("[0-9a-f]{32}").matches(sameKey))
-        assertFalse(logoNamespace(base, "user1").contains("key-a"))
     }
 
     @Test fun concurrencyIsBoundedAndTimeoutStartsAfterAdmission() = runBlocking {

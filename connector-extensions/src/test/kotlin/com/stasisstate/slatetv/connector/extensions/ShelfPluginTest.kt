@@ -72,10 +72,13 @@ class ShelfPluginTest {
         assertEquals("http://example.com/x", items["h"]!!.launchUri)
     }
 
-    @Test fun neverAllowsLaunchActivityClassName() {
+    @Test fun neverAllowsBuiltInActivityOrTvProviderLaunchExtras() {
         val body = shelf(
             """{"id":"x","title":"t","launchPackageName":"com.example.app",
-               "launchActivityClassName":"com.evil.SecretActivity","launchExtras":{"a":"b"}}""",
+               "launchActivityClassName":"com.evil.SecretActivity","launchExtras":{
+                 "preview_program_id":42,"watch_next_program_id":42,"app_channel_package":"com.example.app",
+                 "tif_channel_id":7,"jellyfin_channel_id":"01234567-89ab-cdef-0123-456789abcdef"
+               }}""",
         )
         val card = ShelfFeedParser.parse(body, "f").items.single()
         assertNull(card.launchActivityClassName)

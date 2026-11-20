@@ -7,11 +7,17 @@ import android.net.Uri
 import android.widget.Toast
 import com.stasisstate.slatetv.connector.extensions.ExtensionsManagerActivity
 import com.stasisstate.slatetv.connector.immich.ImmichSettingsActivity
+import com.stasisstate.slatetv.connector.livetv.AppChannelsSettingsActivity
 import com.stasisstate.slatetv.connector.livetv.BuiltInLiveTvShelfPlugin
+import com.stasisstate.slatetv.connector.livetv.BuiltInLiveTvShelfPlugin.Companion.EXTRA_APP_CHANNEL_PACKAGE
+import com.stasisstate.slatetv.connector.livetv.BuiltInLiveTvShelfPlugin.Companion.EXTRA_PREVIEW_PROGRAM_ID
+import com.stasisstate.slatetv.connector.livetv.BuiltInLiveTvShelfPlugin.Companion.EXTRA_WATCH_NEXT_PROGRAM_ID
 import com.stasisstate.slatetv.connector.livetv.LiveTvChannelTuner
 import com.stasisstate.slatetv.connector.livetv.LiveTvGuideActivity
 import com.stasisstate.slatetv.connector.livetv.LiveTvSettingsActivity
 import com.stasisstate.slatetv.plugin.api.ShelfCard
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Only these built-in connector activities may be launched under Slate TV's own package name.
@@ -21,6 +27,7 @@ internal val ALLOWED_BUILT_IN_ACTIVITIES: Set<String> = setOf(
     ImmichSettingsActivity::class.java.name,
     LiveTvSettingsActivity::class.java.name,
     LiveTvGuideActivity::class.java.name,
+    AppChannelsSettingsActivity::class.java.name,
     ExtensionsManagerActivity::class.java.name,
 )
 
@@ -28,6 +35,8 @@ internal val ALLOWED_PUBLIC_LAUNCH_SCHEMES: Set<String> = setOf("https", "http",
 
 internal sealed interface ShelfLaunchDecision {
     data class TuneSystemChannel(val channelId: Long) : ShelfLaunchDecision
+    data class LaunchPreviewProgram(val rowId: Long, val expectedPackage: String) : ShelfLaunchDecision
+    data class LaunchWatchNextProgram(val rowId: Long, val expectedPackage: String) : ShelfLaunchDecision
     data class BuiltInActivity(val className: String) : ShelfLaunchDecision
     data class PublicUri(val uri: String) : ShelfLaunchDecision
     data class ExternalPackage(val packageName: String) : ShelfLaunchDecision
@@ -39,6 +48,23 @@ internal fun decideShelfCardLaunch(
     hostPackage: String,
     card: ShelfCard,
 ): ShelfLaunchDecision {
+    val extras = card.launchExtras
+    if (EXTRA_PREVIEW_PROGRAM_ID in extras || EXTRA_WATCH_NEXT_PROGRAM_ID in extras || EXTRA_APP_CHANNEL_PACKAGE in extras) {
+        val owner = extras[EXTRA_APP_CHANNEL_PACKAGE] as? String
+        if (owner == null || owner == hostPackage || owner != card.launchPackageName ||
+            !LiveTvChannelTuner.isValidPackageName(owner) || card.launchUri != null || card.launchActivityClassName != null
+        ) return ShelfLaunchDecision.Blocked
+
+        val previewId = extras[EXTRA_PREVIEW_PROGRAM_ID] as? Long
+        val watchNextId = extras[EXTRA_WATCH_NEXT_PROGRAM_ID] as? Long
+        return when {
+            previewId != null && previewId >= 0 && EXTRA_WATCH_NEXT_PROGRAM_ID !in extras ->
+                ShelfLaunchDecision.LaunchPreviewProgram(previewId, owner)
+            watchNextId != null && watchNextId >= 0 && EXTRA_PREVIEW_PROGRAM_ID !in extras ->
+                ShelfLaunchDecision.LaunchWatchNextProgram(watchNextId, owner)
+            else -> ShelfLaunchDecision.Blocked
+        }
+    }
     extractTifChannelId(card.launchExtras)?.let { return ShelfLaunchDecision.TuneSystemChannel(it) }
 
     val activity = card.launchActivityClassName
@@ -91,9 +117,19 @@ internal fun launchPluginActivity(context: Context, packageName: String, activit
     if (!launched) Toast.makeText(context, "Unable to open destination", Toast.LENGTH_SHORT).show()
 }
 
-internal fun launchShelfCard(context: Context, card: ShelfCard) {
+internal suspend fun launchShelfCard(context: Context, card: ShelfCard) {
     val launched = when (val decision = decideShelfCardLaunch(context.packageName, card)) {
-        is ShelfLaunchDecision.TuneSystemChannel -> LiveTvChannelTuner.tuneSystemChannel(context, decision.channelId)
+        is ShelfLaunchDecision.TuneSystemChannel -> withContext(Dispatchers.IO) {
+            LiveTvChannelTuner.tuneSystemChannel(context, decision.channelId)
+        }
+
+        is ShelfLaunchDecision.LaunchPreviewProgram -> withContext(Dispatchers.IO) {
+            LiveTvChannelTuner.launchPreviewProgram(context, decision.rowId, decision.expectedPackage)
+        }
+
+        is ShelfLaunchDecision.LaunchWatchNextProgram -> withContext(Dispatchers.IO) {
+            LiveTvChannelTuner.launchWatchNextProgram(context, decision.rowId, decision.expectedPackage)
+        }
 
         is ShelfLaunchDecision.BuiltInActivity -> runCatching {
             val intent = Intent().setComponent(ComponentName(context.packageName, decision.className))

@@ -9,11 +9,9 @@ import android.net.Uri
 import java.time.Instant
 
 internal const val READ_TV_LISTINGS = "android.permission.READ_TV_LISTINGS"
-internal const val LIVE_CHANNELS_PACKAGE = "com.android.tv"
 internal const val UPCOMING_WINDOW_MS = 4L * 60 * 60 * 1000
 private const val MAX_PROGRAM_ROWS = 5_000
 private const val MAX_CHANNEL_ROWS = 2_000
-private const val MAX_LOGO_READ = 2L * 1024 * 1024
 
 internal data class TifChannelRow(
     val id: Long,
@@ -141,7 +139,7 @@ internal class SystemTvChannelsSource(
 internal fun Cursor.string(column: String): String? =
     getColumnIndex(column).takeIf { it >= 0 && !isNull(it) }?.let(::getString)
 
-private fun Cursor.long(column: String): Long? =
+internal fun Cursor.long(column: String): Long? =
     getColumnIndex(column).takeIf { it >= 0 && !isNull(it) }?.let(::getLong)
 
 internal fun parseChannelRows(cursor: Cursor, limit: Int = MAX_CHANNEL_ROWS): List<TifChannelRow> {
@@ -226,18 +224,24 @@ internal class ContentResolverTvListingsReader(
 }
 
 /** Channel logo bytes (≤2 MiB) from the TV provider, or `null` when absent / too large / unreadable. */
-internal fun readSystemChannelLogo(resolver: ContentResolver, channelId: Long): ByteArray? = runCatching {
-    resolver.openInputStream(TvContract.buildChannelLogoUri(channelId))?.use { input ->
-        val out = java.io.ByteArrayOutputStream()
-        val buffer = ByteArray(8192)
-        while (true) {
-            val read = input.read(buffer)
-            if (read < 0) break
-            out.write(buffer, 0, read)
-            if (out.size() > MAX_LOGO_READ) return@runCatching null
-        }
-        out.toByteArray().takeIf { it.isNotEmpty() }
+internal fun readSystemChannelLogo(resolver: ContentResolver, channelId: Long): ByteArray? =
+    TvContract.buildChannelLogoUri(channelId)?.let { readCappedBytes(resolver, it) }
+
+/** Up to [MAX_LOGO_BYTES] bytes from [uri], or `null` when absent, too large, or unreadable. */
+internal fun readCappedBytes(resolver: ContentResolver, uri: Uri): ByteArray? = runCatching {
+    resolver.openInputStream(uri)?.use(::readCappedStreamBytes)
+}.getOrNull()
+
+internal fun readCappedStreamBytes(input: java.io.InputStream): ByteArray? = runCatching {
+    val out = java.io.ByteArrayOutputStream()
+    val buffer = ByteArray(8192)
+    while (true) {
+        val read = input.read(buffer)
+        if (read < 0) break
+        if (out.size() + read > MAX_LOGO_BYTES) return@runCatching null
+        out.write(buffer, 0, read)
     }
+    out.toByteArray().takeIf { it.isNotEmpty() }
 }.getOrNull()
 
 internal fun hasTvListingsPermission(context: Context) =

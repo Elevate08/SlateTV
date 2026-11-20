@@ -3,7 +3,6 @@ package com.stasisstate.slatetv.connector.livetv
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -23,16 +22,11 @@ import java.time.format.FormatStyle
 
 class LiveTvGuideActivity : LiveTvBaseActivity() {
     private lateinit var recycler: RecyclerView
-    private lateinit var loadMoreButton: Button
     private lateinit var status: TextView
     private lateinit var synopsis: TextView
     private lateinit var adapter: GuideAdapter
     private var load: Job? = null
     private var selectedChannel: String? = null
-    private var activeApi: JellyfinApiClient? = null
-    private var activeUserId: String? = null
-    private var systemMode = false
-    private var pagination = GuidePaginationState()
     private val loadedChannels = mutableListOf<Channel>()
     private val upcomingByChannel = mutableMapOf<String, Program>()
     private val timeFormat = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withZone(ZoneId.systemDefault())
@@ -59,14 +53,6 @@ class LiveTvGuideActivity : LiveTvBaseActivity() {
         }
         root.addView(recycler, LinearLayout.LayoutParams(-1, 0, 1f))
 
-        loadMoreButton = button("Load more channels") { loadNextPage() }.apply {
-            visibility = View.GONE
-        }
-        root.addView(loadMoreButton, LinearLayout.LayoutParams(-1, -2).apply {
-            topMargin = dp(8)
-            bottomMargin = dp(6)
-        })
-
         synopsis = label("", 18f).apply { maxLines = 4; ellipsize = android.text.TextUtils.TruncateAt.END }
         root.addView(synopsis)
         setContentView(root)
@@ -81,44 +67,11 @@ class LiveTvGuideActivity : LiveTvBaseActivity() {
         load?.cancel()
         loadedChannels.clear()
         upcomingByChannel.clear()
-        pagination = GuidePaginationState()
-        loadMoreButton.visibility = View.GONE
         load = scope.launch {
             status.visibility = View.VISIBLE
             status.text = "Loading Live TV…"
             try {
-                val config = LiveTvConfigStore(applicationContext).load()
-                systemMode = config.sourceMode == LiveTvSourceMode.SYSTEM_LIVE_CHANNELS
-                activeApi = null
-                activeUserId = null
-                if (systemMode) {
-                    loadSystemChannels()
-                    return@launch
-                }
-                if (config.apiKey.isBlank() || config.serverUrl.isBlank()) {
-                    empty("Open Settings to connect your Jellyfin server.")
-                    return@launch
-                }
-                val api = JellyfinApiClient(config)
-                if (!api.liveTvEnabled()) {
-                    empty("Live TV is unavailable on this Jellyfin server.")
-                    return@launch
-                }
-                val userId = config.userId.ifBlank { api.detectUserId() }
-                activeApi = api
-                activeUserId = userId
-
-                val firstPage = api.channelPage(userId, PAGE_SIZE, false, 0)
-                if (firstPage.items.isEmpty()) {
-                    empty("No Live TV channels found.")
-                    return@launch
-                }
-                loadedChannels.addAll(firstPage.items)
-                pagination.onPageLoaded(firstPage.received, firstPage.items.size, firstPage.total)
-                status.visibility = View.GONE
-                updateLoadMoreButton()
-                render(focusSelected = true)
-                fetchUpNextFor(api, userId, firstPage.items)
+                loadSystemChannels()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -142,66 +95,9 @@ class LiveTvGuideActivity : LiveTvBaseActivity() {
                 }
                 loadedChannels.addAll(result.channels)
                 upcomingByChannel.putAll(result.upcoming)
-                pagination.onPageLoaded(result.channels.size, result.channels.size, result.channels.size)
                 status.visibility = View.GONE
-                updateLoadMoreButton()
                 render(focusSelected = true)
             }
-        }
-    }
-
-    private fun loadNextPage() {
-        val api = activeApi ?: return
-        val userId = activeUserId ?: return
-        if (load?.isActive == true || !pagination.hasMore) return
-        load = scope.launch {
-            loadMoreButton.isEnabled = false
-            loadMoreButton.text = "Loading more channels…"
-            try {
-                val page = api.channelPage(userId, PAGE_SIZE, false, pagination.nextStartIndex)
-                val existingIds = loadedChannels.mapTo(HashSet()) { it.id }
-                val added = page.items.filter { existingIds.add(it.id) }
-                loadedChannels.addAll(added)
-                pagination.onPageLoaded(page.received, added.size, page.total)
-                if (added.isNotEmpty()) {
-                    render(focusSelected = false)
-                    fetchUpNextFor(api, userId, added)
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                status.visibility = View.VISIBLE
-                status.text = "Could not load additional channels."
-            } finally {
-                loadMoreButton.isEnabled = true
-                updateLoadMoreButton()
-            }
-        }
-    }
-
-    private suspend fun fetchUpNextFor(api: JellyfinApiClient, userId: String, channels: List<Channel>) {
-        if (channels.isEmpty()) return
-        val now = Instant.now()
-        try {
-            for (group in channels.chunked(20)) {
-                val next = api.upNext(userId, group.map(Channel::id), now)
-                upcomingByChannel.putAll(next)
-            }
-            render(focusSelected = false)
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) {
-            status.visibility = View.VISIBLE
-            status.text = "Up Next is temporarily unavailable."
-        }
-    }
-
-    private fun updateLoadMoreButton() {
-        if (pagination.hasMore) {
-            loadMoreButton.visibility = View.VISIBLE
-            loadMoreButton.text = "Load more channels (${pagination.loadedCount} loaded)"
-        } else {
-            loadMoreButton.visibility = View.GONE
         }
     }
 
@@ -209,7 +105,6 @@ class LiveTvGuideActivity : LiveTvBaseActivity() {
         loadedChannels.clear()
         upcomingByChannel.clear()
         adapter.submitList(emptyList())
-        loadMoreButton.visibility = View.GONE
         synopsis.text = ""
         status.visibility = View.VISIBLE
         status.text = message
@@ -244,7 +139,9 @@ class LiveTvGuideActivity : LiveTvBaseActivity() {
                 oldItem.channel.id == newItem.channel.id
 
             override fun areContentsTheSame(oldItem: GuideRow, newItem: GuideRow) =
-                oldItem.channel == newItem.channel && oldItem.upcoming == newItem.upcoming
+                oldItem.channel == newItem.channel && oldItem.upcoming == newItem.upcoming &&
+                    oldItem.channel.current?.remainingTime(oldItem.now) == newItem.channel.current?.remainingTime(newItem.now) &&
+                    oldItem.channel.current?.progressPercent(oldItem.now) == newItem.channel.current?.progressPercent(newItem.now)
         },
     ) {
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
@@ -298,7 +195,7 @@ class LiveTvGuideActivity : LiveTvBaseActivity() {
                 ?: "Up next · —"
 
             holder.itemView.setOnClickListener {
-                if (systemMode) tuneChannel(channel.id.toLongOrNull() ?: -1L) else launchJellyfin()
+                tuneChannel(channel.id.toLongOrNull() ?: -1L)
             }
             holder.itemView.setOnFocusChangeListener { _, focused ->
                 if (focused) {
@@ -316,9 +213,5 @@ class LiveTvGuideActivity : LiveTvBaseActivity() {
             val progressBar: ProgressBar,
             val upNextView: TextView,
         ) : RecyclerView.ViewHolder(view)
-    }
-
-    private companion object {
-        const val PAGE_SIZE = 100
     }
 }

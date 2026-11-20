@@ -15,20 +15,18 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.time.Instant
 
-internal const val JELLYFIN_TV = "org.jellyfin.androidtv"
-
 /**
- * Live TV & Guide shelf running in-process inside the host app. Channels come from Android TV System
- * Live Channels (no login) or, optionally, a Jellyfin server.
+ * Live TV & Guide shelf running in-process inside the host app. Channels come only from Android TV System
+ * Live Channels (no login). Jellyfin content is surfaced separately, with no sign-in, through App Channels.
  */
 class BuiltInLiveTvShelfPlugin(private val context: Context) : ShelfPlugin {
     private val appContext = context.applicationContext ?: context
-    private val logoCache by lazy { LiveTvLogoCache(File(appContext.cacheDir, LOGO_DIR)) }
+    private val logoCache by lazy { LiveTvLogoCache(File(appContext.cacheDir, LIVE_TV_LOGO_DIR)) }
 
     override val metadata = ShelfPluginMetadata(
         id = PLUGIN_ID,
         name = "Live TV & Guide",
-        description = "Live TV channels and program guide from System Live Channels or Jellyfin",
+        description = "Live TV channels and program guide from System Live Channels",
         version = "1.0.0",
         packageName = context.packageName,
         settingsActivityClassName = LiveTvSettingsActivity::class.java.name,
@@ -41,12 +39,8 @@ class BuiltInLiveTvShelfPlugin(private val context: Context) : ShelfPlugin {
      */
     override suspend fun fetchShelf(): ShelfData? {
         val config = withContext(Dispatchers.IO) { LiveTvConfigStore(appContext).load() }
-        if (config.sourceMode == LiveTvSourceMode.SYSTEM_LIVE_CHANNELS) {
-            if (!hasTvListingsPermission(appContext)) return unavailable(NEEDS_PERMISSION)
-            return shelfCache.getFetch(config, ::fetchSystemShelf)
-        }
-        if (config.serverUrl.isBlank() || config.apiKey.isBlank()) return unavailable("Configure Jellyfin first.")
-        return shelfCache.getFetch(config, ::fetchJellyfinShelf)
+        if (!hasTvListingsPermission(appContext)) return unavailable(NEEDS_PERMISSION)
+        return shelfCache.getFetch(config, ::fetchSystemShelf)
     }
 
     private suspend fun fetchSystemShelf(config: LiveTvConfig): ShelfFetch {
@@ -76,32 +70,6 @@ class BuiltInLiveTvShelfPlugin(private val context: Context) : ShelfPlugin {
         return ShelfFetch(shelf(items), hasMissingLogos = proxied.hasMissingLogos)
     }
 
-    private suspend fun fetchJellyfinShelf(config: LiveTvConfig): ShelfFetch {
-        val api = JellyfinApiClient(config)
-        if (!api.liveTvEnabled()) return ShelfFetch(unavailable("Live TV is unavailable on this server."))
-        val user = config.userId.ifBlank { api.detectUserId() }
-        val channels = api.channels(user, config.maxHomeChannels.coerceIn(1, 24), config.favoritesOnly)
-        if (channels.isEmpty()) return ShelfFetch(unavailable("No Live TV channels found."))
-        val now = Instant.now()
-        val inGuide = config.cardTapAction == CardTapAction.OPEN_GUIDE
-
-        // Logos are fetched here with the authenticated, pinned-TLS client and handed over as local files,
-        // so Jellyfin tokens never leave the app.
-        val namespace = logoNamespace(config, user)
-        val proxied = proxyLogos(
-            channels = channels,
-            idOf = { it.id },
-            rawUrlOf = { it.imageUri },
-            semaphore = logoSemaphore,
-        ) { channel, rawUrl ->
-            logoCache.publishJellyfin(api, rawUrl, channel.imageTag, namespace)
-        }
-        val items = channels.map { channel ->
-            jellyfinCard(channel, proxied.logos[channel.id], inGuide, appContext.packageName, GUIDE_ACTIVITY, now)
-        }.distinctBy(ShelfCard::id)
-        return ShelfFetch(shelf(items), hasMissingLogos = proxied.hasMissingLogos)
-    }
-
     private fun shelf(items: List<ShelfCard>) =
         ShelfData(true, "Live TV · On Now", items, guideActivityClassName = GUIDE_ACTIVITY)
 
@@ -110,11 +78,18 @@ class BuiltInLiveTvShelfPlugin(private val context: Context) : ShelfPlugin {
     companion object {
         const val PLUGIN_ID = "livetv"
         const val LEGACY_EXTERNAL_ID = "com.stasisstate.slatetv.plugin.jellyfin.livetv"
-        const val ACTION_TUNE_SYSTEM_CHANNEL = "com.stasisstate.slatetv.connector.livetv.TUNE_CHANNEL"
         const val EXTRA_TIF_CHANNEL_ID = "tif_channel_id"
         const val EXTRA_CHANNEL_ID = "channel_id"
 
-        private const val LOGO_DIR = "connector_livetv_logos"
+        /** TV Provider `preview_program._id` of an installed app's home-screen channel item. */
+        const val EXTRA_PREVIEW_PROGRAM_ID = "preview_program_id"
+
+        /** TV Provider `watch_next_program._id` of an installed app's Watch Next item. */
+        const val EXTRA_WATCH_NEXT_PROGRAM_ID = "watch_next_program_id"
+
+        /** Package that published the preview / watch-next row; re-verified against the TV Provider at click time. */
+        const val EXTRA_APP_CHANNEL_PACKAGE = "app_channel_package"
+
         private const val NEEDS_PERMISSION = "Grant Live TV listings access in Settings."
         private val GUIDE_ACTIVITY: String = LiveTvGuideActivity::class.java.name
         private val logoSemaphore = Semaphore(LOGO_FETCH_PERMITS)
@@ -152,7 +127,7 @@ internal fun systemCard(
     now: Instant,
 ): ShelfCard {
     val base = baseCard(channel, logoUri, now)
-    val tifId = channel.id.toLongOrNull()
+    val tifId = channel.id.toLongOrNull()?.takeIf { it >= 0 }
     return if (inGuide || tifId == null) {
         base.copy(
             launchPackageName = packageName,
@@ -164,26 +139,5 @@ internal fun systemCard(
             launchUri = channelUriString(tifId),
             launchExtras = mapOf(BuiltInLiveTvShelfPlugin.EXTRA_TIF_CHANNEL_ID to tifId),
         )
-    }
-}
-
-/** Card for a Jellyfin channel: opens the in-app guide, or launches the Jellyfin TV app. */
-internal fun jellyfinCard(
-    channel: Channel,
-    logoUri: String?,
-    inGuide: Boolean,
-    packageName: String,
-    guideActivity: String,
-    now: Instant,
-): ShelfCard {
-    val base = baseCard(channel, logoUri, now)
-    return if (inGuide) {
-        base.copy(
-            launchPackageName = packageName,
-            launchActivityClassName = guideActivity,
-            launchExtras = mapOf(BuiltInLiveTvShelfPlugin.EXTRA_CHANNEL_ID to channel.id.take(2048)),
-        )
-    } else {
-        base.copy(launchPackageName = JELLYFIN_TV)
     }
 }

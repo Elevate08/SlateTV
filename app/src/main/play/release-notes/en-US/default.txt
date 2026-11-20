@@ -1,1 +1,5 @@
-Meet Slate TV, a gallery-first Android TV launcher with rotating photo backdrops, a reorderable pinned app dock, built-in photo library and live TV guide connectors, and zero-code JSON extensions via QR or URL.
+1.0.0-beta.3
+- Jellyfin rows (Next up, Recently added, Continue watching and more) now come straight from the installed Jellyfin app. No separate Jellyfin sign-in.
+- Jellyfin posters load on Home cards.
+- Live TV & Guide uses Android TV system Live Channels; the Jellyfin server sign-in was removed.
+- Clearer Default Home status when another launcher still takes over.
