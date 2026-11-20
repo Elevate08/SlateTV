@@ -29,8 +29,8 @@ android {
         applicationId = "com.stasisstate.slatetv"
         minSdk = 26
         targetSdk = 36
-        versionCode = 5
-        versionName = "1.0.0-beta.5"
+        versionCode = 6
+        versionName = "1.0.0-beta.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -80,6 +80,7 @@ dependencies {
     implementation(project(":connector-immich"))
     implementation(project(":connector-livetv"))
     implementation(project(":connector-extensions"))
+    implementation(project(":connector-homeassistant"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)

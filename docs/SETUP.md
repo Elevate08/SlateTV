@@ -30,6 +30,7 @@ Configure everything directly inside **Slate TV Settings** (zero extra app icons
 - **Background Sources:** Open **Slate TV Settings → BACKGROUND SOURCE** to choose **Ambient Slate**, **Local Photos**, **Immich Photos** (tap **Configure Immich Photos** for LAN auto-discovery, direct sign-in, or QR phone pairing with TOFU TLS certificate pinning), or any installed JSON photo feed extension.
 - **Live TV & Guide Shelf:** Open **Slate TV Settings → HOME SHELVES** and tap **Configure Live TV & Guide**. Uses Android TV's built-in **System Live Channels** EPG only (no login; just grant `READ_TV_LISTINGS`). Jellyfin content (Next Up, Latest Media, Watch Next) appears through **App Channels** when the Jellyfin app is installed, with no Jellyfin sign-in in Slate TV. Auto-hides whenever unconfigured or unavailable.
 - **Google Calendar:** Open **Slate TV Settings → DISPLAY & GALLERY → Show Google Calendar Events** and allow Android's read-only Calendar permission. The feature is off by default and requires no additional Google sign-in. Slate TV shows up to three events over the next seven days from visible calendars already synced to a single Google account on the TV. Event titles and times stay on the device and are visible to anyone who can see the home screen. Turning the setting off hides them immediately. Availability depends on the TV's Android Calendar Provider and Google Calendar sync. If the provider has calendars from more than one Google account, the agenda stays hidden because Slate TV cannot determine the active Google TV profile.
+- **Home Assistant:** Open **Slate TV Settings → SMART HOME → Home Assistant**. See [section 4](#4-home-assistant-doorbell-alerts--home-controls).
 - **Zero-Code JSON Extensions:** Open **Slate TV Settings → EXTENSIONS → Manage JSON Extensions** to add any HTTP/JSON photo feed or home shelf manifest via **Phone QR Code** or direct URL (with explicit on-TV confirmation).
 
 ---
@@ -54,3 +55,27 @@ Configure everything directly inside **Slate TV Settings** (zero extra app icons
 adb shell pm enable --user current com.google.android.tvlauncher
 adb shell cmd package set-home-activity --user current com.google.android.tvlauncher/.MainActivity
 ```
+
+---
+
+## 4. Home Assistant: Doorbell Alerts & Home Controls
+
+Slate TV connects directly to your Home Assistant server. It needs no add-on or custom integration.
+
+1. **Create a token.** In Home Assistant, open your **Profile → Security → Long-lived access tokens → Create token**. Slate TV stores the token encrypted with the Android Keystore and sends it only to the server address you enter.
+2. **Connect.** Open **Slate TV Settings → SMART HOME → Home Assistant**. Enter the server address (for example `http://homeassistant.local:8123`) and the token, then select **Test connection**.
+3. **Home screen controls (optional).** Under **Choose home controls**, pick up to 12 lights, switches, fans, covers, toggles (input booleans), scenes, or scripts. They appear as a row above the dock: press **Up** from the dock to reach them. Press **OK** to toggle a device or run a scene or script. Hold **OK** on a dimmable light to set its brightness.
+4. **Doorbells.** Select **Add doorbell**, pick the entity that fires when someone rings (a binary sensor, `event.*` entity, or button), then optionally pick a camera. When it rings, a card with the live camera feed appears in the corner of the screen. Press **Left/Right** to choose a reply, **OK** to send it, or **Back** to dismiss. The card closes on its own after the auto-dismiss time.
+5. **Quick replies.** Each reply always fires a `slatetv_quick_reply` event in Home Assistant. Its data includes `message`, `doorbell`, `camera`, and `source`. A reply can also run a script, scene, or button you pick. Scripts receive the same fields as variables, so a script can play `{{ message }}` on a doorbell speaker. To act on replies without a script, create an automation in Home Assistant with an **Event** trigger of type `slatetv_quick_reply`. Firing the event requires an admin user's token. Replies that run a script work with any user's token.
+
+### Show alerts over other apps
+
+To show the doorbell card over whatever is playing, Slate TV needs **Display over other apps** access. Select **Show alerts over other apps** in the Home Assistant settings. Many TVs don't include this settings screen. If yours doesn't, grant access over ADB:
+
+```bash
+adb shell appops set com.stasisstate.slatetv SYSTEM_ALERT_WINDOW allow
+```
+
+Without this access, doorbell alerts only appear while Slate TV is on screen.
+
+While doorbell alerts are on, Slate TV keeps a small background service running, so Android doesn't suspend the connection while another app is in front. Turning alerts off, or removing all doorbells, stops the service. Some Android system screens, such as Settings, hide all overlays while they are open.

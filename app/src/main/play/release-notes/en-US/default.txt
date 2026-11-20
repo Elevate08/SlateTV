@@ -1,3 +1,4 @@
-1.0.0-beta.5
-- Show upcoming Google Calendar events on Home. Opt in under Settings → Display & Gallery.
-- Supported TVs use calendars already synced to the device. Allow read-only Calendar access to show event titles and times without another Google sign-in.
+1.0.0-beta.6
+- New Home Assistant integration (Settings → Smart Home). Connect with a long-lived access token.
+- Control lights, switches, scenes and scripts from a row above the dock. Hold OK on a light to set brightness.
+- Doorbell alerts show a live camera card with quick replies: Left/Right to choose, OK to send, Back to dismiss.

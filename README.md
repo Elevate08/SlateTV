@@ -35,6 +35,7 @@ Slate TV ships as a **single self-contained APK / App Bundle**—no companion AP
 | **`:app`** | Core Android TV launcher host (`com.stasisstate.slatetv`) bundling built-in Ambient Slate, Local Photos, in-process connectors, and zero-code JSON extensions |
 | **`:connector-immich`** | In-process photo-server background connector (mDNS discovery, direct sign-in, QR pairing, TOFU SHA-256 TLS pinning) |
 | **`:connector-livetv`** | In-process Live TV & EPG guide shelf connector. Channels come only from Android TV System Live Channels via `READ_TV_LISTINGS` (no sign-in). Also hosts App Channels, which shows installed apps' home-screen rows; Jellyfin rows appear there with no Jellyfin sign-in |
+| **`:connector-homeassistant`** | In-process Home Assistant connector: home-screen light/switch/scene controls and doorbell alerts with a live camera card and D-pad quick replies (long-lived access token, WebSocket live updates) |
 | **`:connector-extensions`** | Zero-code Open HTTP/JSON Extension Protocol v1 for community photo feeds and home shelves (QR phone install with explicit on-TV confirmation) |
 | **`:plugin-api`** | Clean Kotlin interfaces (`BackgroundPlugin`, `ShelfPlugin`) shared by built-in connectors and JSON extensions |
 

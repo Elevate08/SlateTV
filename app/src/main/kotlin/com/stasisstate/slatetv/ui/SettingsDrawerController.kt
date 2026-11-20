@@ -51,6 +51,8 @@ internal class SettingsDrawerController(
     private val onManageDefaultHome: () -> Unit,
     private val calendarStatus: () -> Int,
     private val onCalendarSettingClicked: () -> Unit,
+    private val homeAssistantStatus: () -> String,
+    private val onHomeAssistantClicked: () -> Unit,
     private val onClosed: () -> Unit,
 ) {
     private var tipJarState: TipJarState = TipJarState()
@@ -186,6 +188,14 @@ internal class SettingsDrawerController(
         ) {
             launchPluginActivity(context, context.packageName, ExtensionsManagerActivity::class.java.name)
         }
+
+        addSectionHeader(context.getString(R.string.ha_settings_section))
+        addRow(
+            context.getString(R.string.ha_settings_title),
+            homeAssistantStatus(),
+            "home-assistant",
+            onClick = onHomeAssistantClicked,
+        )
 
         addSectionHeader("DISPLAY & GALLERY")
 

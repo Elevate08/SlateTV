@@ -138,6 +138,8 @@
 
             <include layout="@layout/home_shelf" />
 
+            <include layout="@layout/home_assistant_controls" />
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

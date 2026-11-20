@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ha_settings_section">SMART HOME</string>
+    <string name="ha_settings_title">Home Assistant</string>
+    <string name="ha_settings_not_configured">Doorbell alerts with live camera, and light controls on Home</string>
+    <string name="ha_settings_connected">Connected · %1$s · %2$s</string>
+    <plurals name="ha_settings_controls">
+        <item quantity="one">%d control</item>
+        <item quantity="other">%d controls</item>
+    </plurals>
+    <plurals name="ha_settings_doorbells">
+        <item quantity="one">%d doorbell</item>
+        <item quantity="other">%d doorbells</item>
+    </plurals>
+    <string name="ha_settings_connecting">Connecting…</string>
+    <string name="ha_settings_offline">Offline — retrying</string>
+    <string name="ha_settings_auth_failed">Token rejected — open to fix</string>
+    <string name="ha_tile_on">On</string>
+    <string name="ha_tile_off">Off</string>
+    <string name="ha_tile_on_brightness">On · %1$d%%</string>
+    <string name="ha_tile_run">Run</string>
+    <string name="ha_tile_unavailable">Unavailable</string>
+    <string name="ha_tile_working">…</string>
+    <string name="ha_tile_hint_toggle">%1$s · OK to toggle</string>
+    <string name="ha_tile_hint_brightness">%1$s · OK to toggle · Hold OK for brightness</string>
+    <string name="ha_tile_hint_run">%1$s · OK to run</string>
+    <string name="ha_tile_failed">Couldn\'t reach Home Assistant</string>
+    <string name="ha_brightness_title">%1$s brightness</string>
+    <string name="ha_brightness_off">Off</string>
+</resources>

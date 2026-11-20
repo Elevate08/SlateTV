@@ -5,6 +5,7 @@ import android.util.Log
 import com.stasisstate.slatetv.apps.AppRepository
 import com.stasisstate.slatetv.apps.DockPreferences
 import com.stasisstate.slatetv.connector.extensions.ExtensionRegistry
+import com.stasisstate.slatetv.connector.homeassistant.HomeAssistantRuntime
 import com.stasisstate.slatetv.connector.immich.BuiltInImmichPlugin
 import com.stasisstate.slatetv.settings.LauncherPreferences
 import com.stasisstate.slatetv.wallpaper.BitmapLoader
@@ -82,5 +83,8 @@ class SlateApplication : Application() {
             diskCache = diskCache,
             bitmapLoader = bitmapLoader,
         )
+
+        // Home Assistant lives at application scope so doorbell rings arrive while other apps are in front.
+        HomeAssistantRuntime.init(this, appScope)
     }
 }

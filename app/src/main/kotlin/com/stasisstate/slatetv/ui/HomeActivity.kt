@@ -41,6 +41,9 @@ import com.stasisstate.slatetv.apps.AppInfo
 import com.stasisstate.slatetv.billing.TipJar
 import com.stasisstate.slatetv.calendar.CalendarAgenda
 import com.stasisstate.slatetv.calendar.GoogleCalendarSource
+import com.stasisstate.slatetv.connector.homeassistant.HaStatus
+import com.stasisstate.slatetv.connector.homeassistant.HomeAssistantRuntime
+import com.stasisstate.slatetv.connector.homeassistant.HomeAssistantSettingsActivity
 import com.stasisstate.slatetv.settings.DefaultLauncherHelper
 import com.stasisstate.slatetv.settings.LauncherSettings
 import androidx.lifecycle.lifecycleScope
@@ -50,6 +53,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -103,6 +107,7 @@ class HomeActivity : AppCompatActivity() {
         return migrated
     }
     private lateinit var shelfController: HomeShelfController
+    private lateinit var haControls: HomeAssistantControlsPanel
     private var lastDockFocus: View? = null
     private lateinit var dockAdapter: AppDockAdapter
     private lateinit var allAppsController: AllAppsOverlayController
@@ -151,6 +156,7 @@ class HomeActivity : AppCompatActivity() {
                 offlineBadge.visibility = View.GONE
                 app.wallpaperManager.onNetworkRestored()
                 shelfManager.refresh()
+                HomeAssistantRuntime.reconnectIfIdle()
             }
         }
 
@@ -195,6 +201,7 @@ class HomeActivity : AppCompatActivity() {
                 if (hadFocus && !shelfController.hasFocus()) restoreDockFocus()
             }
         }
+        setupHomeAssistantControls()
         setupActionPills()
         setupOverlays()
         registerBackHandler()
@@ -239,6 +246,7 @@ class HomeActivity : AppCompatActivity() {
         exitIdleGalleryMode()
         backdropRenderer.ensureVisibleAfterWake()
         app.wallpaperManager.onResume()
+        HomeAssistantRuntime.syncListener()
         val shelfRefreshStarted = skipNextResumeShelfRefresh
         skipNextResumeShelfRefresh = false
         if (!shelfRefreshStarted || settingsController.isVisible) {
@@ -328,8 +336,11 @@ class HomeActivity : AppCompatActivity() {
 
                 KeyEvent.KEYCODE_DPAD_UP -> {
                     if (event.repeatCount == 0 && !allAppsController.isVisible && !settingsController.isVisible) {
-                        if (!shelfController.hasFocus()) {
+                        if (haControls.hasFocus()) {
+                            if (shelfController.requestFocus()) return true
+                        } else if (!shelfController.hasFocus()) {
                             lastDockFocus = currentFocus
+                            if (haControls.requestFocus()) return true
                             if (shelfController.requestFocus()) return true
                         } else if (shelfController.moveVertical(KeyEvent.KEYCODE_DPAD_UP)) {
                             return true
@@ -345,9 +356,13 @@ class HomeActivity : AppCompatActivity() {
 
                 KeyEvent.KEYCODE_DPAD_DOWN -> {
                     if (shelfController.hasFocus() && !allAppsController.isVisible && !settingsController.isVisible) {
-                        if (!shelfController.moveVertical(KeyEvent.KEYCODE_DPAD_DOWN)) {
+                        if (!shelfController.moveVertical(KeyEvent.KEYCODE_DPAD_DOWN) && !haControls.requestFocus()) {
                             restoreDockFocus()
                         }
+                        return true
+                    }
+                    if (haControls.hasFocus() && !allAppsController.isVisible && !settingsController.isVisible) {
+                        restoreDockFocus()
                         return true
                     }
                 }
@@ -496,11 +511,57 @@ class HomeActivity : AppCompatActivity() {
             onManageDefaultHome = { showDefaultLauncherDialog() },
             calendarStatus = ::calendarSettingsStatus,
             onCalendarSettingClicked = ::onCalendarSettingClicked,
+            homeAssistantStatus = ::homeAssistantSettingsStatus,
+            onHomeAssistantClicked = {
+                runCatching {
+                    startActivity(Intent(this, HomeAssistantSettingsActivity::class.java))
+                }
+            },
             onClosed = {
                 hudContainer.visibility = View.VISIBLE
                 ensureValidFocus()
             },
         )
+    }
+
+    private fun setupHomeAssistantControls() {
+        haControls = HomeAssistantControlsPanel(
+            container = findViewById(R.id.homeAssistantControls),
+            scope = lifecycleScope,
+            onFocusLabel = { focusedLabelText.text = it },
+            onDialogOpen = { open ->
+                isContextMenuOpen = open
+                if (open) mainHandler.removeCallbacks(enterIdleRunnable) else resetIdleTimer()
+            },
+        )
+        lifecycleScope.launch {
+            HomeAssistantRuntime.config.combine(HomeAssistantRuntime.entities) { config, entities -> config to entities }
+                .collect { (config, entities) ->
+                    val hadFocus = haControls.hasFocus()
+                    haControls.render(config, entities)
+                    if (hadFocus && !haControls.hasFocus()) restoreDockFocus()
+                }
+        }
+        lifecycleScope.launch {
+            HomeAssistantRuntime.status.collect {
+                if (::settingsController.isInitialized) refreshSettingsIfOpen()
+            }
+        }
+    }
+
+    private fun homeAssistantSettingsStatus(): String {
+        val config = HomeAssistantRuntime.config.value
+        return when (HomeAssistantRuntime.status.value) {
+            HaStatus.NotConfigured -> getString(R.string.ha_settings_not_configured)
+            HaStatus.Connecting -> getString(R.string.ha_settings_connecting)
+            HaStatus.Connected -> getString(
+                R.string.ha_settings_connected,
+                resources.getQuantityString(R.plurals.ha_settings_controls, config.homeEntityIds.size, config.homeEntityIds.size),
+                resources.getQuantityString(R.plurals.ha_settings_doorbells, config.doorbells.size, config.doorbells.size),
+            )
+            HaStatus.AuthFailed -> getString(R.string.ha_settings_auth_failed)
+            is HaStatus.Disconnected -> getString(R.string.ha_settings_offline)
+        }
     }
 
     private fun calendarSettingsStatus(): Int = when {

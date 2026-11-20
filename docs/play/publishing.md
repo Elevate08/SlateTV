@@ -69,3 +69,15 @@ Slate TV is an **Android TV-only** app (`android.software.leanback` required), s
 Submit the `QUERY_ALL_PACKAGES` declaration if Play Console prompts for it (≤ 500 chars; 414 chars below):
 
 > Slate TV is an Android TV Home Launcher (CATEGORY_HOME). QUERY_ALL_PACKAGES is required for its core purpose: discovering installed TV and optional sideloaded apps so users can browse all installed apps in the All Apps drawer, pin, unpin, reorder, or hide apps on the Home dock, open App Info, and launch any installed app from the Home screen. Installed app data stays strictly on-device and is never transmitted.
+
+## Foreground service (`FOREGROUND_SERVICE_SPECIAL_USE`)
+
+The Home Assistant connector runs `DoorbellListenerService` only while the user has doorbell alerts turned on. Declare it under **App content → Foreground service permissions** as **Special use**. Suggested description:
+
+> Slate TV is an Android TV launcher. When the user connects their own Home Assistant server and turns on doorbell alerts, a foreground service keeps a WebSocket connection to that server open so a doorbell press can show a camera alert over the app the user is watching. Without it, Android freezes the launcher in the background and the doorbell is missed. The service stops when alerts are turned off. No data is sent to Stasis State LLC.
+
+A video of the doorbell alert appearing over another app may be requested.
+
+## Display over other apps (`SYSTEM_ALERT_WINDOW`)
+
+Optional and requested at runtime from the Home Assistant settings. It is used only to draw the doorbell alert card over the current app.
