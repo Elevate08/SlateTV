@@ -104,12 +104,13 @@ dependencies {
 }
 
 // Uploads through the Google Play Developer API with the Stasis State service account. The key path lives in
-// ~/.gradle/gradle.properties (playServiceAccountKey=...). Track defaults to closed testing ("alpha").
+// ~/.gradle/gradle.properties (playServiceAccountKey=...). Track defaults to the dedicated Android TV closed
+// testing track ("tv:alpha"). Override with -PplayTrack=tv:qa (internal) or -PplayTrack=tv:production.
 // See docs/play/publishing.md.
 play {
     providers.gradleProperty("playServiceAccountKey").orNull?.let { serviceAccountCredentials.set(file(it)) }
     defaultToAppBundles.set(true)
-    track.set(providers.gradleProperty("playTrack").orElse("alpha"))
+    track.set(providers.gradleProperty("playTrack").orElse("tv:alpha"))
     releaseStatus.set(
         providers.gradleProperty("playReleaseStatus")
             .map { com.github.triplet.gradle.androidpublisher.ReleaseStatus.valueOf(it.uppercase()) }

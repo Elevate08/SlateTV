@@ -1,6 +1,6 @@
-# Android TV Setup & Companion Plugin Guide
+# Android TV Setup Guide
 
-This guide walks through installing **Slate TV** (`com.stasisstate.slatetv`) and optional companion plugin APKs on an Android TV device.
+This guide walks through installing and configuring **Slate TV** (`com.stasisstate.slatetv`) on an Android TV device.
 
 ---
 
@@ -27,7 +27,7 @@ adb shell pm grant com.stasisstate.slatetv android.permission.READ_TV_LISTINGS
 
 Configure everything directly inside **Slate TV Settings** (zero extra app icons cluttering your launcher):
 
-- **Background Sources:** Open **Slate TV Settings → BACKGROUND PLUGIN** to choose **Ambient Slate**, **Local Photos**, **Immich Photos** (tap **Configure Immich Photos** for LAN auto-discovery, direct sign-in, or QR phone pairing with TOFU TLS certificate pinning), or any installed JSON photo feed extension.
+- **Background Sources:** Open **Slate TV Settings → BACKGROUND SOURCE** to choose **Ambient Slate**, **Local Photos**, **Immich Photos** (tap **Configure Immich Photos** for LAN auto-discovery, direct sign-in, or QR phone pairing with TOFU TLS certificate pinning), or any installed JSON photo feed extension.
 - **Live TV & Guide Shelf:** Open **Slate TV Settings → HOME SHELVES** and tap **Configure Live TV & Guide**. Uses Android TV's built-in **System Live Channels** EPG by default (no login required after granting `READ_TV_LISTINGS`), or optionally pairs with a media server via LAN discovery and Quick Connect. Auto-hides whenever unconfigured or unavailable.
 - **Zero-Code JSON Extensions:** Open **Slate TV Settings → EXTENSIONS → Manage JSON Extensions** to add any HTTP/JSON photo feed or home shelf manifest via **Phone QR Code** or direct URL (with explicit on-TV confirmation).
 

@@ -19,15 +19,15 @@ The store listing (text, icon, feature graphic, TV banner, phone & TV screenshot
 
 1. **Create app**: Name **Slate TV: Minimal TV Launcher**, default language **English (United States)**, **App**, **Free**.
 2. **Form factors (Android TV)**: Go to **Test and release → Advanced settings → Form factors**, add **Android TV**, and opt in for TV quality review.
-3. **Store settings**: Category **Tools**, contact email `support@stasisstate.com`, website `https://stasisstate.com`.
-4. **First signed bundle by hand (`versionCode = 1`, `1.0.0-beta.1`)**:
+3. **Store settings**: Category **Tools**, contact email `support@stasisstate.com`, website `https://stasisstate.com/slatetv.html`.
+4. **First signed bundle by hand**:
    - Build `app/build/outputs/bundle/release/app-release.aab` with `./gradlew :app:bundleRelease`.
-   - Go to **Test and release → Testing → Closed testing** (create track or use **Alpha** / **Android TV closed testing**), create a release, upload `app-release.aab`, enroll in **Play App Signing**, and save.
+   - Go to **Test and release → Testing → Closed testing**, switch the form-factor selector at the top to **Android TV only**, create a release, upload `app-release.aab`, enroll in **Play App Signing**, and save.
    - Push the store listing text & graphics via API once the app exists:
      ```sh
      ./gradlew :app:publishReleaseListing
      ```
-5. **Testers**: Add your Google Group or tester email list to the closed testing track and share the opt-in link. Add your test accounts under **Settings → License testing** so Tip Jar purchases can be tested without charging real money.
+5. **Testers**: Add your Google Group or tester email list to the Android TV closed testing track and share the opt-in link. Add your test accounts under **Settings → License testing** so Tip Jar purchases can be tested without charging real money.
 6. **Optional Tip Jar products** (after the first bundle is uploaded): Go to **Monetize with Play → Products → One-time products** and create & activate all five consumable products with **exact** IDs:
 
 | Product ID | Display name | USD price |
@@ -44,13 +44,14 @@ Description: `"An optional tip to support Slate TV development. It does not unlo
 
 ## Subsequent uploads via Gradle Play Publisher
 
-Bump `versionCode` (and `versionName`, e.g., `1.0.0-beta.2`) in `app/build.gradle.kts` before every upload:
+Slate TV is an **Android TV-only** app (`android.software.leanback` required), so all releases target Google Play's dedicated `tv:` form-factor tracks. Bump `versionCode` (and `versionName`, e.g., `1.0.0-beta.3`) in `app/build.gradle.kts` before every upload:
 
 ```sh
-./gradlew :app:publishReleaseBundle :app:publishReleaseListing   # Closed testing ("alpha") + listing
+./gradlew :app:publishReleaseBundle :app:publishReleaseListing   # Android TV closed testing ("tv:alpha") + listing
 ./gradlew :app:publishReleaseListing                             # Store text & graphics only
-./gradlew :app:publishReleaseBundle -PplayTrack=internal         # Internal testing
-./gradlew :app:publishReleaseBundle -PplayReleaseStatus=draft    # Draft upload before first review
+./gradlew :app:publishReleaseBundle -PplayTrack=tv:qa            # Android TV internal testing
+./gradlew :app:publishReleaseBundle -PplayTrack=tv:production    # Android TV production
+./gradlew :app:publishReleaseBundle -PplayReleaseStatus=draft    # Draft upload
 ```
 
 ## App content answers
@@ -65,6 +66,6 @@ Bump `versionCode` (and `versionName`, e.g., `1.0.0-beta.2`) in `app/build.gradl
 
 ## Broad package visibility (`QUERY_ALL_PACKAGES`)
 
-Submit the `QUERY_ALL_PACKAGES` declaration if Play Console prompts for it:
+Submit the `QUERY_ALL_PACKAGES` declaration if Play Console prompts for it (≤ 500 chars; 414 chars below):
 
-> Slate TV replaces the Android TV home screen. Its core function is to let users find, pin, organize, and launch installed apps with a TV remote. The launcher lists Android TV apps and optionally includes sideloaded apps with standard launcher entries. Installed apps vary per user and device, so a fixed package allowlist cannot cover user apps. Package visibility is used exclusively on-device for app discovery, pinning, and launching; the app list is never transmitted, stored remotely, or used for ads or analytics.
+> Slate TV is an Android TV Home Launcher (CATEGORY_HOME). QUERY_ALL_PACKAGES is required for its core purpose: discovering installed TV and optional sideloaded apps so users can browse all installed apps in the All Apps drawer, pin, unpin, reorder, or hide apps on the Home dock, open App Info, and launch any installed app from the Home screen. Installed app data stays strictly on-device and is never transmitted.

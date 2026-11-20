@@ -16,7 +16,7 @@ Slate TV is completely free and open source—with zero ads, zero paywalls, and 
 | :---: | :---: |
 | ![Gallery Home](app/src/main/play/listings/en-US/graphics/tv-screenshots/1.png) | ![Home Shelf](app/src/main/play/listings/en-US/graphics/tv-screenshots/2.png) |
 
-| All Apps Grid | Settings & Plugin Drawer |
+| All Apps Grid | Settings Drawer |
 | :---: | :---: |
 | ![All Apps](app/src/main/play/listings/en-US/graphics/tv-screenshots/3.png) | ![Settings Drawer](app/src/main/play/listings/en-US/graphics/tv-screenshots/4.png) |
 
@@ -82,8 +82,10 @@ Requires JDK 17+ (builds natively on JDK 27) and Android SDK (API 37). Optional 
 
 ---
 
-## Documentation
+## Documentation & Links
 
+- [Slate TV Product Page](https://stasisstate.com/slatetv.html)
+- [Slate TV Privacy Policy](https://stasisstate.com/slatetv-privacy.html)
 - [Android TV Setup Guide](docs/SETUP.md)
 - [Developing Zero-Code JSON Extensions for Slate TV](docs/PLUGIN_DEVELOPMENT.md)
 - [Google Play Release & Signing Guides](docs/play/publishing.md)
