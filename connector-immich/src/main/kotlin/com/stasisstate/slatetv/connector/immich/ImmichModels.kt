@@ -23,7 +23,34 @@ data class ImmichConfig(
     val landscapeOnly: Boolean = true,
     /** User-confirmed TOFU certificate pin; only honoured for `https://` on [PinnedCert.origin]. */
     val pinnedCert: PinnedCert? = null,
+    /**
+     * Key of an Immich album shared link, set by phone pairing. Used only when [apiKey] is blank; it grants
+     * read-only access to exactly one album ([sharedAlbumId]).
+     */
+    val sharedLinkKey: String = "",
+    val sharedAlbumId: String = "",
+    val sharedAlbumName: String = "",
 ) {
+    /** True when this config authenticates with a shared album link instead of an API key. */
+    val usesSharedLink: Boolean
+        get() = apiKey.isBlank() && sharedLinkKey.isNotBlank()
+
+    /** The auth header for API calls: `x-api-key`, or `x-immich-share-key` for a paired shared album. */
+    val authHeader: Pair<String, String>
+        get() = if (usesSharedLink) HEADER_SHARE_KEY to sharedLinkKey.trim() else HEADER_API_KEY to apiKey.trim()
+
+    /** Copy authenticated with an API key; clears any shared-album pairing. */
+    fun withApiKey(key: String): ImmichConfig =
+        copy(apiKey = key, sharedLinkKey = "", sharedAlbumId = "", sharedAlbumName = "")
+
+    /** Copy authenticated with a shared album link; clears the API key. */
+    fun withSharedAlbum(key: String, albumId: String, albumName: String): ImmichConfig = copy(
+        apiKey = "",
+        sharedLinkKey = key,
+        sharedAlbumId = albumId,
+        sharedAlbumName = albumName,
+    )
+
     val normalizedServerUrl: String
         get() = normalizeUrl(serverUrl)
 
@@ -42,6 +69,7 @@ data class ImmichConfig(
 
     override fun toString(): String =
         "ImmichConfig(serverUrl=$normalizedServerUrl, apiKey=${if (apiKey.isBlank()) "<unset>" else "***"}, " +
+            "sharedLink=${if (sharedLinkKey.isBlank()) "<unset>" else "***"}, " +
             "sourceMode=$sourceMode, albums=${selectedAlbumIds.size}, quality=$imageQuality, " +
             "landscapeOnly=$landscapeOnly, pinnedCert=$pinnedCert)"
 
@@ -52,13 +80,24 @@ data class ImmichConfig(
             serverUrl = url,
             selectedAlbumIds = if (normalizeUrl(url) == normalizedServerUrl) selectedAlbumIds else emptySet(),
             pinnedCert = if (sameOrigin) pinnedCert else null,
+            // A shared link only exists on the server that issued it.
+            sharedLinkKey = if (sameOrigin) sharedLinkKey else "",
+            sharedAlbumId = if (sameOrigin) sharedAlbumId else "",
+            sharedAlbumName = if (sameOrigin) sharedAlbumName else "",
         )
     }
 
     val isConfigured: Boolean
-        get() = normalizedServerUrl.isNotBlank() && apiKey.isNotBlank()
+        get() = normalizedServerUrl.isNotBlank() && (apiKey.isNotBlank() || sharedLinkKey.isNotBlank())
 
     companion object {
+        const val HEADER_API_KEY = "x-api-key"
+        const val HEADER_SHARE_KEY = "x-immich-share-key"
+        const val HEADER_SHARE_SLUG = "x-immich-share-slug"
+
+        /** Immich's default port, tried automatically for bare LAN addresses. */
+        const val DEFAULT_IMMICH_PORT = 2283
+
         /** Lowercase `host:port` for an http(s) URL, or null. */
         fun originOf(url: String): String? {
             val parsed = url.toHttpUrlOrNull() ?: return null
@@ -84,6 +123,29 @@ data class ImmichConfig(
 
         private val IPV4_LITERAL = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
         private val PRIVATE_SUFFIXES = listOf(".local", ".lan", ".home", ".internal", ".home.arpa", ".localdomain")
+
+        /**
+         * Addresses worth trying, in order, for what the user typed. An explicit scheme is used exactly as given.
+         * Bare input tries the normalized form first, then — for LAN hosts without a port — Immich's default
+         * port 2283. Public names stay `https://` only.
+         */
+        fun candidateUrls(raw: String): List<String> {
+            val trimmed = raw.trim().trimEnd('/')
+            if (trimmed.isEmpty()) return emptyList()
+            val primary = normalizeUrl(trimmed)
+            if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
+                return listOf(primary)
+            }
+            val authority = trimmed.substringBefore('/').substringBefore('?').substringAfterLast('@')
+            if (authority.startsWith("[") || authority.contains(':')) return listOf(primary)
+            val path = trimmed.removePrefix(authority)
+            // Never downgrade a public name to cleartext http:// (it would carry the password unencrypted).
+            return if (primary.startsWith("http://")) {
+                listOf(primary, "http://$authority:$DEFAULT_IMMICH_PORT$path")
+            } else {
+                listOf(primary)
+            }
+        }
 
         private fun defaultSchemeFor(bare: String): String {
             val authority = bare.substringBefore('/').substringBefore('?').substringAfterLast('@')
@@ -199,4 +261,47 @@ sealed class ImmichSignInResult {
         val isAuthError: Boolean = false,
         val isUntrustedCertificate: Boolean = false,
     ) : ImmichSignInResult()
+}
+
+/** Outcome of [ImmichApiClient.findServer]: which candidate address answered as Immich. */
+sealed class ImmichServerProbe {
+    data class Found(val serverUrl: String) : ImmichServerProbe()
+
+    /** [serverUrl] answered over HTTPS with a certificate the system does not trust: offer TOFU review. */
+    data class UntrustedCertificate(val serverUrl: String) : ImmichServerProbe()
+
+    data class NotFound(val message: String) : ImmichServerProbe()
+}
+
+/** Outcome of one [ImmichApiClient.findSharedLinkBySlug] poll during phone pairing. */
+sealed class ImmichSharedLinkLookup {
+    /** An album link with this custom URL exists. [key] is the link's share key (a credential). */
+    data class Found(val key: String, val albumId: String, val albumName: String, val assetCount: Int) :
+        ImmichSharedLinkLookup() {
+        override fun toString() = "Found(albumId=$albumId, albumName=$albumName, assetCount=$assetCount, key=***)"
+    }
+
+    /** No link with this custom URL yet — keep polling. */
+    data object NotYet : ImmichSharedLinkLookup()
+
+    /** The link has a password; Slate TV cannot use password-protected links. */
+    data object PasswordProtected : ImmichSharedLinkLookup()
+
+    /** The link shares individual photos rather than an album. */
+    data object NotAnAlbum : ImmichSharedLinkLookup()
+
+    data class Failure(val message: String, val isUntrustedCertificate: Boolean = false) : ImmichSharedLinkLookup()
+}
+
+/** Parsed `GET /api/server/version`. */
+data class ImmichServerVersion(val major: Int, val minor: Int, val patch: Int) : Comparable<ImmichServerVersion> {
+    override fun compareTo(other: ImmichServerVersion): Int =
+        compareValuesBy(this, other, { it.major }, { it.minor }, { it.patch })
+
+    override fun toString() = "v$major.$minor.$patch"
+
+    companion object {
+        /** Custom shared-link URLs (`slug`) — required for phone pairing — arrived in Immich v1.137.0. */
+        val SHARED_LINK_SLUG_MIN = ImmichServerVersion(1, 137, 0)
+    }
 }

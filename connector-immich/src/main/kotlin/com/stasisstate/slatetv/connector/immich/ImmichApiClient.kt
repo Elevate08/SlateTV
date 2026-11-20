@@ -24,8 +24,9 @@ import kotlin.coroutines.resumeWithException
  * Lightweight, header-authenticated REST client for self-hosted Immich servers (v1.115+, v2.x, v3.x).
  *
  * Security & reliability hardening:
- * - Authenticates via the `x-api-key` HTTP header (never query params).
- * - Origin-bound redirects: strips `x-api-key` / `Authorization` if any redirect changes scheme, host, or port,
+ * - Authenticates via the `x-api-key` header, or `x-immich-share-key` for a phone-paired shared album
+ *   (never query params).
+ * - Origin-bound redirects: strips auth headers if any redirect changes scheme, host, or port,
  *   and drops body headers when an HTTP 303 turns a POST into a GET.
  * - Self-signed HTTPS is supported ONLY through a user-confirmed TOFU pin ([TofuTls.buildPinnedSsl]); there is
  *   no trust-all mode. Without a pin the platform's system trust store applies.
@@ -114,7 +115,7 @@ class ImmichApiClient(
     }
 
     fun buildAuthHeaders(config: ImmichConfig): Map<String, String> = mapOf(
-        HEADER_API_KEY to config.apiKey.trim(),
+        config.authHeader,
         "Accept" to "image/*",
     )
 
@@ -126,9 +127,9 @@ class ImmichApiClient(
         withContext(Dispatchers.IO) {
             val base = validateServerUrl(config.serverUrl)
                 ?: return@withContext ImmichConnectionResult.Failure("Invalid server URL. Use http://host:2283 or https://host.")
-            if (config.apiKey.isBlank()) {
+            if (!config.isConfigured) {
                 return@withContext ImmichConnectionResult.Failure(
-                    message = "API key is empty.",
+                    message = "Not signed in — sign in or pair with your phone.",
                     isAuthError = true,
                 )
             }
@@ -150,6 +151,10 @@ class ImmichApiClient(
                 return@withContext ImmichConnectionResult.Failure("Invalid server URL: ${e.message}")
             }
 
+            if (safeConfig.usesSharedLink) {
+                return@withContext testSharedLink(client, safeConfig, pingOk)
+            }
+
             try {
                 val albums = fetchAlbumsInternal(client, safeConfig)
                 // Also verify asset.read + asset.view permission by testing one random asset thumbnail if available
@@ -160,7 +165,7 @@ class ImmichApiClient(
                 if (firstAsset != null) {
                     val thumbReq = Request.Builder()
                         .url(buildAssetImageUrl(safeConfig, firstAsset.id))
-                        .header(HEADER_API_KEY, safeConfig.apiKey.trim())
+                        .auth(safeConfig)
                         .header("Accept", "image/*")
                         .get()
                         .build()
@@ -314,10 +319,167 @@ class ImmichApiClient(
         }
     }
 
+    /** Verifies a shared-album credential with `GET /api/shared-links/me`. */
+    private suspend fun testSharedLink(
+        client: OkHttpClient,
+        config: ImmichConfig,
+        pingOk: Boolean,
+    ): ImmichConnectionResult = try {
+        val req = Request.Builder()
+            .url("${config.normalizedServerUrl}/api/shared-links/me")
+            .auth(config)
+            .header("Accept", "application/json")
+            .get()
+            .build()
+        client.executeCancellable(req).use { resp ->
+            checkResponse(resp.code, resp.message, sharedLink = true)
+            val link = JSONObject(readBoundedJsonBody(resp))
+            val album = link.optJSONObject("album")
+            if (album == null || album.optString("id") != config.sharedAlbumId) {
+                return ImmichConnectionResult.Failure("The shared link no longer points at the paired album — pair again.")
+            }
+        }
+        // Prove photos can actually be listed and downloaded with the share key, not just that the link exists.
+        val sample = fetchSharedAlbumInternal(client, config, maxItems = 1).firstOrNull { it.isImage }
+        if (sample != null) {
+            val thumb = Request.Builder().url(buildAssetImageUrl(config, sample.id)).auth(config)
+                .header("Accept", "image/*").get().build()
+            client.executeCancellable(thumb).use { checkResponse(it.code, it.message, sharedLink = true) }
+        }
+        ImmichConnectionResult.Success(albumCount = 1, serverRespondedPing = pingOk)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: ImmichAuthException) {
+        ImmichConnectionResult.Failure(e.message ?: "Shared link rejected.", isAuthError = true)
+    } catch (e: IOException) {
+        networkFailure(config.normalizedServerUrl, e)
+    } catch (_: Exception) {
+        ImmichConnectionResult.Failure("Unexpected response from Immich.")
+    }
+
+    /**
+     * Tries each of [ImmichConfig.candidateUrls] for what the user typed and returns the first address whose
+     * `GET /api/server/ping` answers `pong` — so "192.168.1.5" finds `http://192.168.1.5:2283` on its own.
+     */
+    suspend fun findServer(rawUrl: String, pinnedCert: PinnedCert? = null): ImmichServerProbe =
+        withContext(Dispatchers.IO) {
+            val candidates = ImmichConfig.candidateUrls(rawUrl).filter { validateServerUrl(it) != null }
+            if (candidates.isEmpty()) {
+                return@withContext ImmichServerProbe.NotFound("That doesn't look like a valid server address.")
+            }
+            var firstFailure: String? = null
+            var firstResponder: String? = null
+            for (candidate in candidates) {
+                val client = clientFor(ImmichConfig(serverUrl = candidate, pinnedCert = pinnedCert))
+                try {
+                    val req = Request.Builder().url("$candidate/api/server/ping").header("Accept", "application/json")
+                        .get().build()
+                    client.executeCancellable(req).use { resp ->
+                        val body = if (resp.isSuccessful) runCatching { readBoundedJsonBody(resp) }.getOrDefault("") else ""
+                        if (body.contains("pong")) return@withContext ImmichServerProbe.Found(candidate)
+                        if (firstResponder == null) firstResponder = candidate
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: IOException) {
+                    if (TofuTls.isUntrustedCertificateError(e)) {
+                        return@withContext ImmichServerProbe.UntrustedCertificate(candidate)
+                    }
+                    if (firstFailure == null) firstFailure = networkFailure(candidate, e).message
+                } catch (_: IllegalArgumentException) {
+                    // Try the next candidate.
+                }
+            }
+            // Something answered, just not with Immich's pong (e.g. a proxy guarding /ping): let the caller try it.
+            firstResponder?.let { return@withContext ImmichServerProbe.Found(it) }
+            ImmichServerProbe.NotFound(firstFailure ?: "Immich was not found at that address.")
+        }
+
+    /** Unauthenticated `GET /api/server/version`, or null if the server doesn't answer it. */
+    suspend fun serverVersion(serverUrl: String, pinnedCert: PinnedCert? = null): ImmichServerVersion? =
+        withContext(Dispatchers.IO) {
+            val base = validateServerUrl(serverUrl) ?: return@withContext null
+            val client = clientFor(ImmichConfig(serverUrl = base, pinnedCert = pinnedCert))
+            try {
+                val req = Request.Builder().url("$base/api/server/version").header("Accept", "application/json")
+                    .get().build()
+                client.executeCancellable(req).use { resp ->
+                    if (!resp.isSuccessful) return@use null
+                    val obj = JSONObject(readBoundedJsonBody(resp))
+                    if (!obj.has("major")) return@use null
+                    ImmichServerVersion(obj.optInt("major"), obj.optInt("minor"), obj.optInt("patch"))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+    /**
+     * Phone pairing, one poll: looks up the album shared link whose custom URL is [slug] with
+     * `GET /api/shared-links/me` (unauthenticated — the slug is the lookup). Only TV → Immich traffic.
+     */
+    suspend fun findSharedLinkBySlug(
+        serverUrl: String,
+        slug: String,
+        pinnedCert: PinnedCert? = null,
+    ): ImmichSharedLinkLookup = withContext(Dispatchers.IO) {
+        val base = validateServerUrl(serverUrl)
+            ?: return@withContext ImmichSharedLinkLookup.Failure("Invalid server address.")
+        val client = clientFor(ImmichConfig(serverUrl = base, pinnedCert = pinnedCert))
+        try {
+            val req = Request.Builder()
+                .url("$base/api/shared-links/me")
+                .header(ImmichConfig.HEADER_SHARE_SLUG, slug)
+                .header("Accept", "application/json")
+                .get()
+                .build()
+            client.executeCancellable(req).use { resp ->
+                when {
+                    resp.isSuccessful -> {
+                        val link = JSONObject(readBoundedJsonBody(resp))
+                        val key = link.optString("key")
+                        val album = link.optJSONObject("album")
+                        when {
+                            !link.optString("type").equals("ALBUM", ignoreCase = true) || album == null ->
+                                ImmichSharedLinkLookup.NotAnAlbum
+                            key.isBlank() || album.optString("id").isBlank() ->
+                                ImmichSharedLinkLookup.Failure("Immich returned an incomplete shared link.")
+                            else -> ImmichSharedLinkLookup.Found(
+                                key = key,
+                                albumId = album.optString("id"),
+                                albumName = album.optString("albumName", "Shared album"),
+                                assetCount = album.optInt("assetCount", 0),
+                            )
+                        }
+                    }
+                    resp.code == 401 || resp.code == 403 || resp.code == 404 -> {
+                        val message = runCatching { JSONObject(readBoundedJsonBody(resp)).optString("message") }
+                            .getOrDefault("")
+                        if (message.contains("password", ignoreCase = true)) {
+                            ImmichSharedLinkLookup.PasswordProtected
+                        } else {
+                            ImmichSharedLinkLookup.NotYet
+                        }
+                    }
+                    else -> ImmichSharedLinkLookup.Failure("Immich returned HTTP ${resp.code}.")
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            val failure = networkFailure(base, e)
+            ImmichSharedLinkLookup.Failure(failure.message, isUntrustedCertificate = failure.isUntrustedCertificate)
+        } catch (_: Exception) {
+            ImmichSharedLinkLookup.Failure("Unexpected response from Immich.")
+        }
+    }
+
     suspend fun listAlbums(config: ImmichConfig): List<ImmichAlbum> =
         withContext(Dispatchers.IO) {
             val base = validateServerUrl(config.serverUrl) ?: return@withContext emptyList()
-            if (config.apiKey.isBlank()) return@withContext emptyList()
+            if (config.apiKey.isBlank()) return@withContext emptyList() // shared links can't list albums
             val safeConfig = config.copy(serverUrl = base)
             fetchAlbumsInternal(clientFor(safeConfig), safeConfig)
         }
@@ -327,9 +489,15 @@ class ImmichApiClient(
         batchSize: Int = 24,
     ): List<ImmichAsset> = withContext(Dispatchers.IO) {
         val base = validateServerUrl(config.serverUrl) ?: return@withContext emptyList()
-        if (config.apiKey.isBlank()) return@withContext emptyList()
+        if (!config.isConfigured) return@withContext emptyList()
         val safeConfig = config.copy(serverUrl = base)
         val client = clientFor(safeConfig)
+        if (safeConfig.usesSharedLink) {
+            return@withContext filterEligible(
+                fetchSharedAlbumInternal(client, safeConfig, maxItems = batchSize),
+                landscapeOnly = safeConfig.landscapeOnly,
+            ).shuffled().take(batchSize * 2)
+        }
         val raw = when (safeConfig.sourceMode) {
             ImmichSourceMode.RANDOM_LIBRARY -> fetchRandomInternal(client, safeConfig, favoritesOnly = false, size = batchSize)
             ImmichSourceMode.FAVORITES -> fetchRandomInternal(client, safeConfig, favoritesOnly = true, size = batchSize)
@@ -349,7 +517,7 @@ class ImmichApiClient(
     private suspend fun fetchAlbumsInternal(client: OkHttpClient, config: ImmichConfig): List<ImmichAlbum> {
         val req = Request.Builder()
             .url("${config.normalizedServerUrl}/api/albums")
-            .header(HEADER_API_KEY, config.apiKey.trim())
+            .auth(config)
             .header("Accept", "application/json")
             .get()
             .build()
@@ -478,14 +646,15 @@ class ImmichApiClient(
             }
             val req = Request.Builder()
                 .url("${config.normalizedServerUrl}/api/search/metadata")
-                .header(HEADER_API_KEY, config.apiKey.trim())
+                .auth(config)
                 .header("Accept", "application/json")
                 .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
                 .build()
 
             val pageAssets = runCatching {
                 client.executeCancellable(req).use { resp ->
-                    if (resp.code == 401 || resp.code == 403) {
+                    // Older servers don't accept shared-link auth for search; fall through to GET /albums/{id}.
+                    if ((resp.code == 401 || resp.code == 403) && !config.usesSharedLink) {
                         checkResponse(resp.code, resp.message)
                     }
                     if (!resp.isSuccessful) return@use emptyList()
@@ -511,13 +680,13 @@ class ImmichApiClient(
                     ?: continue
                 val req = Request.Builder()
                     .url(albumUrl)
-                    .header(HEADER_API_KEY, config.apiKey.trim())
+                    .auth(config)
                     .header("Accept", "application/json")
                     .get()
                     .build()
                 client.executeCancellable(req).use { resp ->
                     if (resp.code == 401 || resp.code == 403) {
-                        checkResponse(resp.code, resp.message)
+                        checkResponse(resp.code, resp.message, sharedLink = config.usesSharedLink)
                     }
                     if (!resp.isSuccessful) return@use
                     val obj = JSONObject(readBoundedJsonBody(resp))
@@ -532,6 +701,94 @@ class ImmichApiClient(
         return eligible.shuffled().take(maxItems * 2)
     }
 
+    /**
+     * Lists a paired shared album through the timeline API (`/api/timeline/buckets` + `/api/timeline/bucket`),
+     * the only listing that accepts shared-link auth on every server with custom link URLs (v1.137 → v3.x).
+     * Samples up to [MAX_SHARED_BUCKETS] month buckets, weighted by size, so large albums rotate fully.
+     */
+    private suspend fun fetchSharedAlbumInternal(
+        client: OkHttpClient,
+        config: ImmichConfig,
+        maxItems: Int,
+    ): List<ImmichAsset> {
+        val albumId = config.sharedAlbumId.takeIf { it.isNotBlank() } ?: return emptyList()
+        fun timelineUrl(path: String, timeBucket: String? = null) = config.normalizedServerUrl.toHttpUrlOrNull()!!
+            .newBuilder()
+            .addPathSegment("api").addPathSegment("timeline").addPathSegment(path)
+            .addQueryParameter("albumId", albumId)
+            .apply { timeBucket?.let { addQueryParameter("timeBucket", it) } }
+            .build()
+
+        val buckets = client.executeCancellable(
+            Request.Builder().url(timelineUrl("buckets")).auth(config).header("Accept", "application/json").get().build(),
+        ).use { resp ->
+            checkResponse(resp.code, resp.message, sharedLink = true)
+            val array = JSONArray(readBoundedJsonBody(resp))
+            buildList {
+                for (i in 0 until array.length()) {
+                    val obj = array.optJSONObject(i) ?: continue
+                    val bucket = obj.optString("timeBucket")
+                    val count = obj.optInt("count", 0)
+                    if (bucket.isNotBlank() && count > 0) add(bucket to count)
+                }
+            }
+        }
+        val chosen = weightedSample(buckets, MAX_SHARED_BUCKETS)
+        val collected = mutableListOf<ImmichAsset>()
+        for (bucket in chosen) {
+            client.executeCancellable(
+                Request.Builder().url(timelineUrl("bucket", bucket)).auth(config)
+                    .header("Accept", "application/json").get().build(),
+            ).use { resp ->
+                checkResponse(resp.code, resp.message, sharedLink = true)
+                collected += parseTimelineBucket(JSONObject(readBoundedJsonBody(resp)))
+            }
+            if (collected.count { it.isImage } >= maxItems * 2) break
+        }
+        return collected
+    }
+
+    private fun weightedSample(buckets: List<Pair<String, Int>>, count: Int): List<String> {
+        val pool = buckets.toMutableList()
+        val picked = mutableListOf<String>()
+        while (picked.size < count && pool.isNotEmpty()) {
+            var roll = kotlin.random.Random.nextLong(pool.sumOf { it.second.toLong() })
+            val index = pool.indexOfFirst { roll -= it.second; roll < 0 }.coerceAtLeast(0)
+            picked += pool.removeAt(index).first
+        }
+        return picked
+    }
+
+    /** Timeline buckets are columnar: parallel arrays `id[]`, `isImage[]`, `ratio[]`, `fileCreatedAt[]`, ... */
+    private fun parseTimelineBucket(root: JSONObject): List<ImmichAsset> {
+        val ids = root.optJSONArray("id") ?: return emptyList()
+        val isImage = root.optJSONArray("isImage")
+        val ratio = root.optJSONArray("ratio")
+        val created = root.optJSONArray("fileCreatedAt")
+        val city = root.optJSONArray("city")
+        val country = root.optJSONArray("country")
+        val trashed = root.optJSONArray("isTrashed")
+        fun JSONArray?.text(i: Int) = this?.optString(i)?.takeIf { it.isNotBlank() && it != "null" }
+        return buildList {
+            for (i in 0 until ids.length()) {
+                val id = ids.optString(i).takeIf { it.isNotBlank() } ?: continue
+                if (trashed?.optBoolean(i, false) == true) continue
+                val r = ratio?.optDouble(i, 0.0)?.takeIf { !it.isNaN() && it > 0 } ?: 0.0
+                add(
+                    ImmichAsset(
+                        id = id,
+                        type = if (isImage?.optBoolean(i, true) != false) "IMAGE" else "VIDEO",
+                        width = if (r > 0) (r * 1000).toInt() else 0,
+                        height = if (r > 0) 1000 else 0,
+                        dateTakenIso = created.text(i),
+                        city = city.text(i),
+                        country = country.text(i),
+                    ),
+                )
+            }
+        }
+    }
+
     private suspend fun postSearchWithLegacyFallback(
         client: OkHttpClient,
         config: ImmichConfig,
@@ -543,7 +800,7 @@ class ImmichApiClient(
         val url = "${config.normalizedServerUrl}$path"
         val req1 = Request.Builder()
             .url(url)
-            .header(HEADER_API_KEY, config.apiKey.trim())
+            .auth(config)
             .header("Accept", "application/json")
             .post(primaryPayload.toString().toRequestBody(JSON_MEDIA_TYPE))
             .build()
@@ -560,7 +817,7 @@ class ImmichApiClient(
         // Fallback for older Immich v1.x servers rejecting `visibility`
         val req2 = Request.Builder()
             .url(url)
-            .header(HEADER_API_KEY, config.apiKey.trim())
+            .auth(config)
             .header("Accept", "application/json")
             .post(legacyPayload.toString().toRequestBody(JSON_MEDIA_TYPE))
             .build()
@@ -617,10 +874,17 @@ class ImmichApiClient(
         }
     }
 
-    private fun checkResponse(code: Int, message: String) {
+    private fun checkResponse(code: Int, message: String, sharedLink: Boolean = false) {
         when (code) {
             in 200..299 -> Unit
-            401 -> throw ImmichAuthException(401, "Invalid Immich API key (HTTP 401).")
+            401 -> throw ImmichAuthException(
+                401,
+                if (sharedLink) {
+                    "The shared album link no longer works (HTTP 401). It may have expired or been deleted — pair again."
+                } else {
+                    "Invalid Immich API key (HTTP 401)."
+                },
+            )
             403 -> throw ImmichAuthException(403, "Immich API key lacks required permissions (HTTP 403).")
             else -> throw IOException("Immich server returned HTTP $code: $message")
         }
@@ -629,7 +893,16 @@ class ImmichApiClient(
     class ImmichAuthException(val code: Int, message: String) : IOException(message)
 
     companion object {
-        const val HEADER_API_KEY = "x-api-key"
+        const val HEADER_API_KEY = ImmichConfig.HEADER_API_KEY
+        private val SENSITIVE_HEADERS = listOf(
+            ImmichConfig.HEADER_API_KEY,
+            ImmichConfig.HEADER_SHARE_KEY,
+            ImmichConfig.HEADER_SHARE_SLUG,
+            "Authorization",
+        )
+
+        private fun Request.Builder.auth(config: ImmichConfig): Request.Builder =
+            config.authHeader.let { (name, value) -> header(name, value) }
         const val UNTRUSTED_CERT_MESSAGE =
             "This server's HTTPS certificate is not trusted. Review and pin it to continue."
 
@@ -641,6 +914,7 @@ class ImmichApiClient(
         private const val API_KEY_NAME = "Slate TV"
         private val API_KEY_PERMISSIONS = listOf("album.read", "asset.read", "asset.view")
         private const val MAX_RECENT_PAGES = 10
+        private const val MAX_SHARED_BUCKETS = 3
         private const val MAX_JSON_BYTES = 4L * 1024 * 1024
         private const val MAX_REDIRECTS = 5
 
@@ -666,7 +940,7 @@ class ImmichApiClient(
 
         /**
          * Builds an OkHttpClient (system trust only) that strips sensitive auth headers (`x-api-key`,
-         * `Authorization`) on any cross-origin HTTP redirect so credentials can never leak to third-party hosts,
+         * `x-immich-share-*`, `Authorization`) on any cross-origin HTTP redirect so credentials can never leak to third-party hosts,
          * and switches HTTP 303 redirects to a bodyless GET per RFC 9110.
          */
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
@@ -694,10 +968,7 @@ class ImmichApiClient(
                         nextBuilder.method("GET", null)
                         BODY_REPRESENTATION_HEADERS.forEach(nextBuilder::removeHeader)
                     }
-                    if (!sameOrigin) {
-                        nextBuilder.removeHeader(HEADER_API_KEY)
-                        nextBuilder.removeHeader("Authorization")
-                    }
+                    if (!sameOrigin) SENSITIVE_HEADERS.forEach(nextBuilder::removeHeader)
                     currentReq = nextBuilder.build()
                     response = chain.proceed(currentReq)
                     redirectCount++

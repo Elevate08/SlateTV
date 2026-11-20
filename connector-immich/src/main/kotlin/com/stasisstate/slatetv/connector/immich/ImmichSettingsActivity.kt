@@ -23,14 +23,21 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import java.security.SecureRandom
 import java.util.Date
 
 /**
  * 10-foot Android TV settings for the built-in Immich connector. Launched explicitly from Slate TV Settings;
  * it is not exported and has no launcher intent-filter.
+ *
+ * Two ways to connect, both using only TV → Immich traffic (nothing ever connects to the TV):
+ * - Sign in with email + password on the TV, which mints a scoped API key (full library access).
+ * - Pair with phone: the TV shows a QR code and a short code; the user shares an album from Immich on their phone
+ *   with that code as the link's custom URL, and the TV finds it by polling Immich (read-only, one album).
  *
  * Self-signed HTTPS servers are handled with Trust-On-First-Use pinning: when system trust rejects the server,
  * its leaf certificate is probed and shown (host, subject, issuer, validity, SHA-256) for explicit confirmation.
@@ -57,7 +64,7 @@ class ImmichSettingsActivity : AppCompatActivity() {
 
     private var statusOverride: Pair<String, Kind>? = null
     private var pairDialog: AlertDialog? = null
-    private var pairServer: LanConfigServer? = null
+    private var pairJob: Job? = null
     private var signInJob: Job? = null
     private var preflightJob: Job? = null
     private var probeJob: Job? = null
@@ -131,7 +138,16 @@ class ImmichSettingsActivity : AppCompatActivity() {
 
         // ── CONNECTION ──────────────────────────────────────────────────────────────
         rows.section("CONNECTION")
-        signInRow = rows.row("Sign in to Immich", "Email and password — creates a Slate TV key automatically", ::startSignIn)
+        signInRow = rows.row(
+            "Sign in with email & password",
+            "Full library access — Slate TV creates its own read-only key; the password is never stored",
+            ::startSignIn,
+        )
+        rows.row(
+            "Pair with phone (QR)",
+            "No password on the TV — share an album from Immich on your phone. Works through your Immich server only.",
+            ::startPhonePairing,
+        )
         discoveredHeader = rows.section("FOUND ON YOUR NETWORK").also { it.visibility = View.GONE }
         discoveredRows = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -141,17 +157,7 @@ class ImmichSettingsActivity : AppCompatActivity() {
         urlRow = rows.row("Server address", "") {
             editServerUrl { }
         }
-        keyRow = rows.row("API key", "") {
-            edit(
-                title = "API Key",
-                value = draft.apiKey,
-                hint = "Paste or type your Immich API key",
-                inputType = API_KEY_INPUT_TYPE,
-                ime = EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_EXTRACT_UI,
-            ) { update(draft.copy(apiKey = it)) }
-        }
-        rows.row("Test connection", "Check the server address and key", ::testConnection)
-        rows.row("Pair with phone (optional)", "Scan a QR code and enter details on your phone", ::showPairing)
+        rows.row("Test connection", "Check the server address and sign-in", ::testConnection)
 
         // ── PHOTO LIBRARY ───────────────────────────────────────────────────────────
         rows.section("PHOTO LIBRARY")
@@ -171,6 +177,15 @@ class ImmichSettingsActivity : AppCompatActivity() {
 
         // ── ADVANCED ────────────────────────────────────────────────────────────────
         rows.section("ADVANCED")
+        keyRow = rows.row("API key (manual)", "") {
+            edit(
+                title = "API Key",
+                value = draft.apiKey,
+                hint = "Paste or type your Immich API key",
+                inputType = API_KEY_INPUT_TYPE,
+                ime = EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_EXTRACT_UI,
+            ) { if (it.isNotBlank() || !draft.usesSharedLink) update(draft.withApiKey(it)) }
+        }
         certRow = rows.row("Pinned certificate", "", ::inspectCertificate)
 
         rows.addView(TextView(this).apply { height = dp(8) })
@@ -191,8 +206,7 @@ class ImmichSettingsActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
-        pairDialog?.dismiss()
-        closePairing()
+        stopPairing()
         super.onPause()
     }
 
@@ -207,10 +221,22 @@ class ImmichSettingsActivity : AppCompatActivity() {
 
     private fun refresh() {
         urlRow.set(draft.normalizedServerUrl.ifBlank { "Not set — e.g. https://photos.example.com" })
-        keyRow.set(if (draft.apiKey.isBlank()) "Not set" else "Saved  ••••••••")
-        sourceRow.set(draft.sourceMode.displayName)
-        albumRow.set("${draft.selectedAlbumIds.size} selected")
-        albumRow.setActive(draft.sourceMode == ImmichSourceMode.ALBUMS)
+        keyRow.set(
+            when {
+                draft.usesSharedLink -> "Not used — paired with a shared album"
+                draft.apiKey.isBlank() -> "Not set"
+                else -> "Saved  ••••••••"
+            },
+        )
+        if (draft.usesSharedLink) {
+            sourceRow.set("Shared album: ${draft.sharedAlbumName.ifBlank { "paired from phone" }}")
+            albumRow.set("Sign in with email & password to choose other albums")
+        } else {
+            sourceRow.set(draft.sourceMode.displayName)
+            albumRow.set("${draft.selectedAlbumIds.size} selected")
+        }
+        sourceRow.setActive(!draft.usesSharedLink)
+        albumRow.setActive(!draft.usesSharedLink && draft.sourceMode == ImmichSourceMode.ALBUMS)
         qualityRow.set(
             if (draft.imageQuality == ImmichImageQuality.PREVIEW) "Preview 1440p (recommended)" else "Full size",
         )
@@ -249,8 +275,9 @@ class ImmichSettingsActivity : AppCompatActivity() {
 
     private fun renderStatus() {
         val (message, kind) = statusOverride ?: when {
-            !draft.isConfigured -> "Setup needed — sign in to get started" to Kind.WARNING
+            !draft.isConfigured -> "Setup needed — sign in or pair with your phone" to Kind.WARNING
             draft != savedConfig -> "Unsaved changes — select Save" to Kind.WARNING
+            draft.usesSharedLink -> "Saved — showing your shared album" to Kind.NEUTRAL
             else -> "Saved — ready for Slate TV" to Kind.NEUTRAL
         }
         statusPill.text = "●  $message"
@@ -326,9 +353,9 @@ class ImmichSettingsActivity : AppCompatActivity() {
 
     private fun editServerUrl(then: () -> Unit) {
         edit(
-            title = "Server address",
+            title = "Server address — e.g. 192.168.1.20 or photos.example.com",
             value = draft.serverUrl,
-            hint = "https://photos.example.com",
+            hint = "192.168.1.20 or photos.example.com (port 2283 is tried automatically)",
             inputType = SERVER_URL_INPUT_TYPE,
             ime = EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_EXTRACT_UI,
         ) {
@@ -342,42 +369,51 @@ class ImmichSettingsActivity : AppCompatActivity() {
     }
 
     private fun startSignIn() {
-        if (api.validateServerUrl(draft.serverUrl) == null) {
-            editServerUrl { if (api.validateServerUrl(draft.serverUrl) != null) preflightThenPromptCredentials() }
-        } else {
-            preflightThenPromptCredentials()
-        }
+        withResolvedServer { promptCredentials() }
     }
 
     /**
-     * Checks reachability and TLS trust BEFORE asking for a password, so an untrusted certificate is reviewed
-     * and pinned first and the password is never held in memory across the trust prompt.
+     * Makes sure a server address is set, finds the address Immich actually answers on (adding `:2283` / the right
+     * scheme for bare input), and reviews + pins an untrusted certificate — all BEFORE [then] runs. Sign-in uses this
+     * so the password is never typed or held in memory across the trust prompt.
      */
-    private fun preflightThenPromptCredentials() {
+    private fun withResolvedServer(then: () -> Unit) {
+        if (api.validateServerUrl(draft.serverUrl) == null) {
+            editServerUrl { if (api.validateServerUrl(draft.serverUrl) != null) withResolvedServer(then) }
+            return
+        }
         if (preflightJob?.isActive == true || signInJob?.isActive == true) return
-        val serverUrl = draft.serverUrl
+        val typed = draft.serverUrl
         val pin = draft.pinnedCert
-        showStatus("Contacting server…")
+        showStatus("Looking for Immich…")
         preflightJob = scope.launch {
-            val result = api.ping(serverUrl, pin)
-            if (serverUrl != draft.serverUrl) return@launch
-            when {
-                result is ImmichConnectionResult.Success -> {
+            val probe = api.findServer(typed, pin)
+            if (typed != draft.serverUrl) return@launch
+            when (probe) {
+                is ImmichServerProbe.Found -> {
+                    if (ImmichConfig.normalizeUrl(probe.serverUrl) != draft.normalizedServerUrl) {
+                        update(draft.withServerUrl(probe.serverUrl))
+                    }
                     statusOverride = null
                     renderStatus()
-                    promptCredentials()
+                    then()
                 }
-                result is ImmichConnectionResult.Failure && result.isUntrustedCertificate ->
-                    reviewServerCertificate(serverUrl) { preflightThenPromptCredentials() }
-                result is ImmichConnectionResult.Failure -> showStatus(result.message, false)
+                is ImmichServerProbe.UntrustedCertificate -> {
+                    if (ImmichConfig.normalizeUrl(probe.serverUrl) != draft.normalizedServerUrl) {
+                        update(draft.withServerUrl(probe.serverUrl))
+                    }
+                    reviewServerCertificate(probe.serverUrl) { withResolvedServer(then) }
+                }
+                is ImmichServerProbe.NotFound -> showStatus(probe.message, false)
             }
         }
     }
 
     private fun promptCredentials() {
         if (signInJob?.isActive == true) return
+        val rememberedEmail = store.loadLastEmail()
         val email = field(
-            "Email", "", EMAIL_INPUT_TYPE,
+            "Email", rememberedEmail, EMAIL_INPUT_TYPE,
             EditorInfo.IME_ACTION_NEXT or EditorInfo.IME_FLAG_NO_EXTRACT_UI,
         )
         val password = field(
@@ -432,7 +468,8 @@ class ImmichSettingsActivity : AppCompatActivity() {
         }
         showKeyboardWith(dialog)
         styleDialog(dialog)
-        email.requestFocus()
+        // Returning users only need to type the password.
+        if (rememberedEmail.isBlank()) email.requestFocus() else password.requestFocus()
         dialog.show()
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { submit() }
     }
@@ -448,12 +485,13 @@ class ImmichSettingsActivity : AppCompatActivity() {
                 is ImmichSignInResult.Failure -> if (result.isUntrustedCertificate) {
                     // The certificate changed between preflight and sign-in: review it, then ask to sign in again.
                     showStatus("Server certificate changed — review it, then sign in again.", Kind.WARNING)
-                    reviewServerCertificate(serverUrl) { preflightThenPromptCredentials() }
+                    reviewServerCertificate(serverUrl) { startSignIn() }
                 } else {
                     showStatus(result.message, false)
                 }
                 is ImmichSignInResult.Success -> {
-                    val config = draft.withServerUrl(result.serverUrl).copy(apiKey = result.apiKey)
+                    runCatching { store.saveLastEmail(email) }
+                    val config = draft.withServerUrl(result.serverUrl).withApiKey(result.apiKey)
                     draft = config
                     refresh()
                     showStatus("Signed in — saving key…")
@@ -488,6 +526,10 @@ class ImmichSettingsActivity : AppCompatActivity() {
     private fun chooseAlbums() {
         if (loadingAlbums) return
         val config = draft
+        if (config.usesSharedLink) {
+            showStatus("Paired with one shared album. Sign in with email & password to choose albums.", Kind.NEUTRAL)
+            return
+        }
         if (!config.isConfigured) {
             showStatus("Sign in or enter the server address and API key first.", false)
             return
@@ -545,8 +587,8 @@ class ImmichSettingsActivity : AppCompatActivity() {
     }
 
     private fun save(config: ImmichConfig) {
-        if (api.validateServerUrl(config.serverUrl) == null || config.apiKey.isBlank()) {
-            showStatus("Enter a valid server address and API key.", false)
+        if (api.validateServerUrl(config.serverUrl) == null || !config.isConfigured) {
+            showStatus("Sign in, pair with your phone, or enter a server address and API key.", false)
             return
         }
         scope.launch {
@@ -556,51 +598,178 @@ class ImmichSettingsActivity : AppCompatActivity() {
         }
     }
 
-    private fun showPairing() {
-        if (pairServer != null) return
-        lateinit var server: LanConfigServer
-        server = LanConfigServer(draft.serverUrl) { url, key ->
-            runOnUiThread {
-                if (pairServer !== server) return@runOnUiThread
-                pairDialog?.dismiss()
-                closePairing()
-                update(draft.withServerUrl(url).copy(apiKey = key))
-                showStatus("Credentials received — checking connection…")
-                // Runs the TOFU review on-TV if the server uses a self-signed certificate.
-                testConnection()
+    // ── Phone pairing (through the Immich server only) ─────────────────────────────
+
+    /**
+     * QR pairing without any connection to the TV: the TV shows a code, the user creates an album shared link
+     * with that code as its custom URL in Immich on their phone, and the TV polls `GET /api/shared-links/me`.
+     */
+    private fun startPhonePairing() {
+        if (pairJob?.isActive == true) return
+        withResolvedServer {
+            val serverUrl = draft.normalizedServerUrl
+            val pin = draft.pinnedCert
+            showStatus("Checking Immich version…")
+            pairJob = scope.launch {
+                val version = api.serverVersion(serverUrl, pin)
+                if (serverUrl != draft.normalizedServerUrl) return@launch
+                if (version != null && version < ImmichServerVersion.SHARED_LINK_SLUG_MIN) {
+                    showStatus(
+                        "Phone pairing needs Immich v1.137 or newer (this server is $version). " +
+                            "Use Sign in with email & password instead.",
+                        false,
+                    )
+                    return@launch
+                }
+                statusOverride = null
+                renderStatus()
+                runPairing(serverUrl, pin, newPairingCode())
             }
         }
-        pairServer = server
-        val url = try {
-            server.start()
-        } catch (_: Exception) {
-            closePairing()
-            showStatus("Could not start phone pairing.", false)
-            return
+    }
+
+    private suspend fun runPairing(serverUrl: String, pin: PinnedCert?, code: String) {
+        val progress = TextView(this).apply {
+            text = "Waiting for the shared album…"
+            textSize = 16f
+            gravity = Gravity.CENTER
+            setTextColor(ACCENT)
+            setPadding(0, dp(12), 0, 0)
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
         val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(dp(24), dp(12), dp(24), dp(12))
-            QrCodeGenerator.generate(url)?.let { code ->
-                addView(ImageView(context).apply {
-                    setImageBitmap(code)
-                    contentDescription = "Phone pairing QR code"
-                }, dp(208), dp(208))
-            }
-            addView(TextView(context).apply {
-                text = "Open ${url.substringBefore('?')} on your phone\nPIN  ${server.pin}"
-                textSize = 18f
-                gravity = Gravity.CENTER
-                setPadding(0, dp(12), 0, 0)
-            })
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(28), dp(12), dp(28), dp(12))
         }
-        pairDialog = AlertDialog.Builder(this).setTitle("Pair with Phone")
-            .setView(content).setNegativeButton("Close", null).create().apply {
-                setOnDismissListener { if (pairServer === server) closePairing() }
-                styleDialog(this)
-                show()
+        QrCodeGenerator.generate("$serverUrl/albums")?.let { qr ->
+            content.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                addView(ImageView(context).apply {
+                    setImageBitmap(qr)
+                    contentDescription = "QR code that opens your Immich albums on your phone"
+                }, dp(200), dp(200))
+                addView(TextView(context).apply {
+                    text = "Scan to open Immich\nin your phone's browser"
+                    textSize = 13f
+                    gravity = Gravity.CENTER
+                    setTextColor(TEXT_MUTED)
+                    setPadding(0, dp(6), 0, 0)
+                })
+            }, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(28) })
+        }
+        content.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(context).apply {
+                text = "On your phone, in Immich:\n" +
+                    "1.  Open the album to show on the TV\n" +
+                    "2.  Share  →  Create link\n" +
+                    "3.  Set Custom URL to the code below (no password)\n" +
+                    "4.  Create the link"
+                textSize = 17f
+                setTextColor(TEXT_PRIMARY)
+                setLineSpacing(0f, 1.2f)
+            })
+            addView(TextView(context).apply {
+                text = code
+                textSize = 34f
+                typeface = Typeface.MONOSPACE
+                letterSpacing = 0.08f
+                setTextColor(ACCENT)
+                setPadding(0, dp(14), 0, dp(4))
+                contentDescription = "Pairing code ${code.toCharArray().joinToString(" ")}"
+            })
+            addView(TextView(context).apply {
+                text = "Slate TV only talks to $serverUrl — nothing connects to the TV."
+                textSize = 13f
+                setTextColor(TEXT_MUTED)
+            })
+            addView(progress)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+
+        val dialog = AlertDialog.Builder(this).setTitle("Pair with Phone")
+            .setView(ScrollView(this).apply { addView(content) })
+            .setNegativeButton("Cancel", null)
+            .create()
+        val job = pairJob
+        dialog.setOnDismissListener {
+            if (pairDialog === dialog) pairDialog = null
+            if (pairJob === job) {
+                pairJob?.cancel()
+                pairJob = null
             }
+        }
+        pairDialog = dialog
+        styleDialog(dialog)
+        // A screensaver would pause the activity and cancel pairing while the user is busy on their phone.
+        dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        dialog.show()
+
+        val deadline = System.currentTimeMillis() + PAIRING_TIMEOUT_MS
+        var failures = 0
+        while (System.currentTimeMillis() < deadline) {
+            if (serverUrl != draft.normalizedServerUrl) break
+            val result = api.findSharedLinkBySlug(serverUrl, code, pin)
+            when (result) {
+                is ImmichSharedLinkLookup.Found -> {
+                    finishPairing(dialog, result)
+                    return
+                }
+                ImmichSharedLinkLookup.NotYet -> progress.text = "Waiting for the shared album…"
+                ImmichSharedLinkLookup.PasswordProtected ->
+                    progress.text = "That link has a password. Edit the link in Immich and remove it — still waiting…"
+                ImmichSharedLinkLookup.NotAnAlbum ->
+                    progress.text = "That link shares single photos. Share an album instead — still waiting…"
+                is ImmichSharedLinkLookup.Failure -> if (result.isUntrustedCertificate) {
+                    pairDialog = null
+                    dialog.dismiss()
+                    reviewServerCertificate(serverUrl) { startPhonePairing() }
+                    return
+                } else {
+                    failures++
+                    progress.text = "${result.message} Retrying…"
+                }
+            }
+            if (result !is ImmichSharedLinkLookup.Failure) failures = 0
+            // Back off on errors so a strict proxy (fail2ban etc.) isn't hammered.
+            delay(PAIRING_POLL_MS * (1L shl failures.coerceAtMost(3)))
+        }
+        progress.text = "Pairing timed out. Close this and try again."
+        progress.setTextColor(ERROR_TEXT)
+    }
+
+    private suspend fun finishPairing(dialog: AlertDialog, link: ImmichSharedLinkLookup.Found) {
+        pairJob = null // keep this coroutine alive through the dismiss listener
+        dialog.dismiss()
+        val config = draft.withSharedAlbum(link.key, link.albumId, link.albumName)
+        draft = config
+        refresh()
+        showStatus("Paired — saving…")
+        if (!persist(config)) return
+        showStatus("Testing connection…")
+        when (val test = api.testConnection(config)) {
+            is ImmichConnectionResult.Success -> showStatus(
+                "Paired with “${link.albumName}” (${link.assetCount} items). " +
+                    "You can remove the custom URL in Immich now; the link keeps working.",
+                true,
+            )
+            is ImmichConnectionResult.Failure ->
+                showStatus("Paired and saved, but the connection test failed: ${test.message}", false)
+        }
+    }
+
+    private fun stopPairing() {
+        pairJob?.cancel()
+        pairJob = null
+        pairDialog?.dismiss()
+        pairDialog = null
+    }
+
+    /** `slate-` + 8 characters from an unambiguous lowercase alphabet (~40 bits; easy to type on a phone). */
+    private fun newPairingCode(): String {
+        val random = SecureRandom()
+        return "slate-" + (1..8).map { PAIRING_ALPHABET[random.nextInt(PAIRING_ALPHABET.length)] }.joinToString("")
     }
 
     // ── TOFU certificate pinning ────────────────────────────────────────────────────
@@ -782,12 +951,6 @@ class ImmichSettingsActivity : AppCompatActivity() {
         })
     }
 
-    private fun closePairing() {
-        pairDialog = null
-        pairServer?.close()
-        pairServer = null
-    }
-
     // ── View builders ───────────────────────────────────────────────────────────────
 
     private fun View.padded(): View = LinearLayout(this@ImmichSettingsActivity).apply {
@@ -883,6 +1046,10 @@ class ImmichSettingsActivity : AppCompatActivity() {
     private fun dp(value: Int) = (value * resources.displayMetrics.density + 0.5f).toInt()
 
     companion object {
+        private const val PAIRING_POLL_MS = 5_000L
+        private const val PAIRING_TIMEOUT_MS = 15 * 60_000L
+        private const val PAIRING_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+
         internal const val SERVER_URL_INPUT_TYPE = InputType.TYPE_CLASS_TEXT or
             InputType.TYPE_TEXT_VARIATION_URI or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         internal const val EMAIL_INPUT_TYPE = InputType.TYPE_CLASS_TEXT or

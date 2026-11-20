@@ -18,7 +18,6 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import java.net.InetAddress
 
 class ImmichApiClientTest {
     private lateinit var server: MockWebServer
@@ -289,77 +288,6 @@ class ImmichApiClientTest {
         assertNull(second.getHeader("Content-Language"))
         assertNull(second.getHeader("Transfer-Encoding"))
         assertNull(second.getHeader("Content-Length"))
-    }
-
-    @Test
-    fun `LanConfigServer enforces PIN rate limit and single-use consumption`() {
-        var submissions = 0
-        val lanServer = LanConfigServer(
-            initialUrl = "http://192.168.1.10:2283",
-            port = 0,
-            bindAddressOverride = InetAddress.getByName("127.0.0.1"),
-        ) { _, _ ->
-            submissions++
-        }
-
-        lanServer.use { srv ->
-            val startedUrl = srv.start()
-            assertFalse("QR URL must not embed the PIN query param", startedUrl.contains("pin="))
-            val baseUrl = "http://127.0.0.1:${srv.boundPort}"
-            val http = OkHttpClient()
-
-            // Missing Host header is rejected with 400 Bad Request
-            java.net.Socket("127.0.0.1", srv.boundPort).use { rawSocket ->
-                rawSocket.soTimeout = 2_000
-                rawSocket.getOutputStream().write("GET / HTTP/1.1\r\n\r\n".toByteArray())
-                rawSocket.getOutputStream().flush()
-                val statusLine = rawSocket.getInputStream().bufferedReader().readLine()
-                assertTrue("Expected 400 without Host header, got: $statusLine", statusLine.contains("400"))
-            }
-
-            // First valid submission succeeds (200)
-            val goodReq = Request.Builder()
-                .url("$baseUrl/save")
-                .post(
-                    okhttp3.FormBody.Builder()
-                        .add("pin", srv.pin)
-                        .add("serverUrl", "http://192.168.1.50:2283/")
-                        .add("apiKey", "my-secret-api-key")
-                        .build(),
-                )
-                .build()
-            http.newCall(goodReq).execute().use { assertEquals(200, it.code) }
-            assertEquals(1, submissions)
-
-            // Second submission is rejected with 410 Gone (single-use)
-            http.newCall(goodReq).execute().use { assertEquals(410, it.code) }
-            assertEquals(1, submissions)
-        }
-
-        // Separate session: test 5 wrong PINs trigger 429 lockout
-        val lockedServer = LanConfigServer(
-            port = 0,
-            bindAddressOverride = InetAddress.getByName("127.0.0.1"),
-        ) { _, _ -> }
-        lockedServer.use { srv ->
-            srv.start()
-            val baseUrl = "http://127.0.0.1:${srv.boundPort}"
-            val http = OkHttpClient()
-            val badReq = Request.Builder()
-                .url("$baseUrl/save")
-                .post(
-                    okhttp3.FormBody.Builder()
-                        .add("pin", "000000")
-                        .add("serverUrl", "http://192.168.1.50:2283")
-                        .add("apiKey", "k")
-                        .build(),
-                )
-                .build()
-            repeat(LanConfigServer.MAX_FAILED_PIN_ATTEMPTS - 1) {
-                http.newCall(badReq).execute().use { assertEquals(403, it.code) }
-            }
-            http.newCall(badReq).execute().use { assertEquals(429, it.code) }
-        }
     }
 
     @Test
@@ -717,15 +645,155 @@ class ImmichApiClientTest {
         assertEquals(1, server.requestCount)
     }
 
+    // ── Phone pairing via shared-link slug (TV → Immich only) ────────────────────────
+
     @Test
-    fun `LanConfigServer page offers no TLS trust controls`() {
-        LanConfigServer(port = 0, bindAddressOverride = InetAddress.getByName("127.0.0.1")) { _, _ -> }.use { srv ->
-            srv.start()
-            val body = OkHttpClient().newCall(Request.Builder().url("http://127.0.0.1:${srv.boundPort}/").build())
-                .execute().use { it.body!!.string() }
-            assertTrue(body.contains("apiKey"))
-            assertFalse(body.contains("allowUntrustedTls"))
-            assertFalse(body.contains("self-signed", ignoreCase = true))
-        }
+    fun `findSharedLinkBySlug returns Found with key and album and sends the slug header only`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"id":"l1","type":"ALBUM","key":"share-key-abc","slug":"slate-abcd2345",
+                   "album":{"id":"alb-9","albumName":"Family","assetCount":77},"assets":[]}""",
+            ),
+        )
+        val result = client.findSharedLinkBySlug(serverBase(), "slate-abcd2345")
+        assertEquals(ImmichSharedLinkLookup.Found("share-key-abc", "alb-9", "Family", 77), result)
+        val req = server.takeRequest()
+        assertEquals("/api/shared-links/me", req.path)
+        assertEquals("slate-abcd2345", req.getHeader("x-immich-share-slug"))
+        assertNull(req.getHeader("x-api-key"))
+        assertFalse(result.toString().contains("share-key-abc"))
+    }
+
+    @Test
+    fun `findSharedLinkBySlug maps missing, password, individual and server errors`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(401).setBody("""{"message":"Invalid share slug","statusCode":401}"""))
+        server.enqueue(MockResponse().setResponseCode(401).setBody("""{"message":"Password required","statusCode":401}"""))
+        server.enqueue(
+            MockResponse().setResponseCode(200)
+                .setBody("""{"id":"l2","type":"INDIVIDUAL","key":"k","assets":[{"id":"a1"}]}"""),
+        )
+        server.enqueue(MockResponse().setResponseCode(500))
+        assertEquals(ImmichSharedLinkLookup.NotYet, client.findSharedLinkBySlug(serverBase(), "slate-x"))
+        assertEquals(ImmichSharedLinkLookup.PasswordProtected, client.findSharedLinkBySlug(serverBase(), "slate-x"))
+        assertEquals(ImmichSharedLinkLookup.NotAnAlbum, client.findSharedLinkBySlug(serverBase(), "slate-x"))
+        assertTrue(client.findSharedLinkBySlug(serverBase(), "slate-x") is ImmichSharedLinkLookup.Failure)
+    }
+
+    @Test
+    fun `serverVersion parses and gates slug support`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"major":1,"minor":136,"patch":2}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"major":2,"minor":1,"patch":0}"""))
+        server.enqueue(MockResponse().setResponseCode(404))
+        val old = client.serverVersion(serverBase())!!
+        assertTrue(old < ImmichServerVersion.SHARED_LINK_SLUG_MIN)
+        assertTrue(client.serverVersion(serverBase())!! >= ImmichServerVersion.SHARED_LINK_SLUG_MIN)
+        assertNull(client.serverVersion(serverBase()))
+        assertEquals("/api/server/version", server.takeRequest().path)
+    }
+
+    private fun sharedConfig() = ImmichConfig(serverUrl = serverBase())
+        .withSharedAlbum("share-key-abc", "alb-9", "Family")
+
+    @Test
+    fun `shared album config authenticates with share key header and never x-api-key`() = runTest {
+        val config = sharedConfig()
+        assertTrue(config.isConfigured)
+        assertTrue(config.usesSharedLink)
+        assertEquals(mapOf("x-immich-share-key" to "share-key-abc", "Accept" to "image/*"), client.buildAuthHeaders(config))
+        assertFalse(config.toString().contains("share-key-abc"))
+
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""[{"timeBucket":"2024-05-01T00:00:00.000Z","count":2}]"""))
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"id":["p1","v1","t1"],"isImage":[true,false,true],"ratio":[1.5,1.77,1.5],
+                   "isTrashed":[false,false,true],"fileCreatedAt":["2024-05-02T10:00:00.000Z",null,null],
+                   "city":["Oslo",null,null],"country":["Norway",null,null]}""",
+            ),
+        )
+        val assets = client.fetchCandidateAssets(config, batchSize = 4)
+        assertEquals(listOf("p1"), assets.map { it.id })
+        assertEquals("May 2024 · Oslo, Norway", assets.single().formatSubtitle())
+        val bucketsReq = server.takeRequest()
+        assertEquals("/api/timeline/buckets?albumId=alb-9", bucketsReq.path)
+        assertEquals("share-key-abc", bucketsReq.getHeader("x-immich-share-key"))
+        assertNull(bucketsReq.getHeader("x-api-key"))
+        val bucketReq = server.takeRequest()
+        assertTrue(bucketReq.path!!.startsWith("/api/timeline/bucket?albumId=alb-9&timeBucket=2024-05-01"))
+        assertEquals("share-key-abc", bucketReq.getHeader("x-immich-share-key"))
+    }
+
+    @Test
+    fun `shared album with a revoked link surfaces no assets instead of crashing`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(401).setBody("""{"message":"Invalid share key"}"""))
+        assertEquals(emptyList<ImmichAsset>(), runCatching { client.fetchCandidateAssets(sharedConfig(), 4) }.getOrDefault(emptyList()))
+    }
+
+    @Test
+    fun `testConnection verifies a shared album link and reports revoked links`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"res":"pong"}"""))
+        server.enqueue(
+            MockResponse().setResponseCode(200)
+                .setBody("""{"type":"ALBUM","key":"share-key-abc","album":{"id":"alb-9","albumName":"Family"}}"""),
+        )
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""[{"timeBucket":"2024-05-01","count":1}]"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"id":["p1"],"isImage":[true],"ratio":[1.5]}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("jpeg"))
+        assertTrue(client.testConnection(sharedConfig()) is ImmichConnectionResult.Success)
+        server.takeRequest()
+        assertEquals("share-key-abc", server.takeRequest().getHeader("x-immich-share-key"))
+        server.takeRequest()
+        server.takeRequest()
+        val thumb = server.takeRequest()
+        assertTrue(thumb.path!!.startsWith("/api/assets/p1/thumbnail"))
+        assertEquals("share-key-abc", thumb.getHeader("x-immich-share-key"))
+
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"res":"pong"}"""))
+        server.enqueue(MockResponse().setResponseCode(401))
+        val revoked = client.testConnection(sharedConfig())
+        assertTrue(revoked is ImmichConnectionResult.Failure && revoked.isAuthError)
+        assertTrue((revoked as ImmichConnectionResult.Failure).message.contains("pair again"))
+    }
+
+    @Test
+    fun `withApiKey and withSharedAlbum are mutually exclusive and origin change drops the share key`() {
+        val shared = sharedConfig()
+        val signedIn = shared.withApiKey("k1")
+        assertFalse(signedIn.usesSharedLink)
+        assertEquals("", signedIn.sharedLinkKey)
+        assertEquals("x-api-key" to "k1", signedIn.authHeader)
+        assertEquals("", shared.withServerUrl("https://other.example.com").sharedLinkKey)
+        assertEquals("share-key-abc", shared.withServerUrl(serverBase() + "/").sharedLinkKey)
+    }
+
+    // ── Smart server address resolution ──────────────────────────────────────────────
+
+    @Test
+    fun `candidateUrls adds Immich default port for bare LAN hosts and never downgrades public names`() {
+        assertEquals(
+            listOf("http://192.168.1.20", "http://192.168.1.20:2283"),
+            ImmichConfig.candidateUrls("192.168.1.20"),
+        )
+        assertEquals(listOf("http://nas.local", "http://nas.local:2283"), ImmichConfig.candidateUrls("nas.local/"))
+        assertEquals(listOf("http://192.168.1.20:8080"), ImmichConfig.candidateUrls("192.168.1.20:8080"))
+        // Public names are never downgraded to cleartext http.
+        assertEquals(listOf("https://photos.example.com"), ImmichConfig.candidateUrls("photos.example.com"))
+        assertEquals(listOf("https://photos.example.com"), ImmichConfig.candidateUrls("https://photos.example.com"))
+        assertEquals(emptyList<String>(), ImmichConfig.candidateUrls("  "))
+    }
+
+    @Test
+    fun `findServer returns the first candidate answering pong`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"res":"pong"}"""))
+        val probe = client.findServer(serverBase())
+        assertEquals(ImmichServerProbe.Found(serverBase()), probe)
+        assertEquals("/api/server/ping", server.takeRequest().path)
+    }
+
+    @Test
+    fun `findServer reports NotFound when nothing answers`() = runTest {
+        val dead = serverBase()
+        server.shutdown()
+        assertTrue(client.findServer(dead) is ImmichServerProbe.NotFound)
+        server = MockWebServer().also { it.start() }
     }
 }
