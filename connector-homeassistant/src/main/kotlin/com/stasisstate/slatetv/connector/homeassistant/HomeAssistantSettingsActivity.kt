@@ -92,9 +92,10 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
             setPadding(dp(48), dp(36), dp(48), dp(24))
         }
         setContentView(screen)
+        // Title and status stack vertically: a long status (e.g. after pairing) beside the title used to squeeze
+        // the title to zero width, so it wrapped a letter per line and pushed every row off screen.
         val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            orientation = LinearLayout.VERTICAL
             setPadding(dp(16), 0, dp(16), dp(18))
         }
         header.addView(TextView(this).apply {
@@ -102,14 +103,14 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
             textSize = 32f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(TEXT_PRIMARY)
-        }, LinearLayout.LayoutParams(0, -2, 1f))
+        }, LinearLayout.LayoutParams(-1, -2))
         statusPill = TextView(this).apply {
             textSize = 16f
             typeface = Typeface.DEFAULT_BOLD
             setPadding(dp(20), dp(10), dp(20), dp(10))
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
-        header.addView(statusPill, LinearLayout.LayoutParams(-2, -2))
+        header.addView(statusPill, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(12) })
         screen.addView(header)
         screen.addView(ScrollView(this).apply {
             isFillViewport = true
@@ -304,7 +305,8 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
         statusPill.setTextColor(kind.text)
         statusPill.background = GradientDrawable().apply {
             setColor(kind.fill)
-            cornerRadius = dp(40).toFloat()
+            // Pill-shaped on one line, still a tidy rounded box when a long message wraps.
+            cornerRadius = dp(22).toFloat()
         }
     }
 
