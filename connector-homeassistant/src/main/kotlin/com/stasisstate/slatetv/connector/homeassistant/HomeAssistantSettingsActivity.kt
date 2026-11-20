@@ -28,6 +28,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 
 /**
@@ -42,6 +43,8 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
     private lateinit var statusPill: TextView
     private lateinit var rows: LinearLayout
     private var allEntities: List<HaEntity>? = null
+    /** Loaded alongside [allEntities] and only trusted while that is non-null. */
+    private var registry: HaRegistry = HaRegistry.EMPTY
     private var loadJob: Job? = null
     private var statusOverride: Pair<String, Kind>? = null
     private val discovery by lazy { HaServerDiscovery(this) }
@@ -427,7 +430,7 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
             .create().also(::styleDialog).show()
     }
 
-    /** Loads (and caches) all entities, then calls [then] on the main thread. */
+    /** Loads (and caches) all entities plus the registries that label them, then calls [then] on the main thread. */
     private fun withEntities(then: (List<HaEntity>) -> Unit) {
         allEntities?.let { return then(it) }
         if (!config.isConfigured) {
@@ -437,14 +440,21 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
         loadJob?.cancel()
         showStatus("Loading entities…", Kind.WORKING)
         loadJob = lifecycleScope.launch {
-            runCatching { runtime.api().states() }
+            val api = runtime.api()
+            // Registries only improve labels and filtering; any failure degrades to states alone.
+            val registryLoad = async { runCatching { api.registry() }.getOrDefault(HaRegistry.EMPTY) }
+            runCatching { api.states() }
                 .onSuccess { loaded ->
+                    registry = registryLoad.await()
                     allEntities = loaded
                     statusOverride = null
                     renderStatus()
                     then(loaded)
                 }
-                .onFailure { showStatus(it.message ?: "Couldn't load entities", Kind.ERROR) }
+                .onFailure {
+                    registryLoad.cancel()
+                    showStatus(it.message ?: "Couldn't load entities", Kind.ERROR)
+                }
         }
     }
 
@@ -455,53 +465,45 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
     private fun label(entity: HaEntity) = "${entity.friendlyName}  ·  ${entity.entityId}"
 
     private fun chooseHomeControls() = withEntities { entities ->
-        val candidates = sortedFor(entities, HaDomains.HOME_CONTROL) { it.domain == "light" }
-        if (candidates.isEmpty()) {
+        val current = config.homeEntityIds
+        val items = HaPickerModel.items(entities, registry, HaDomains.HOME_CONTROL, keep = current)
+        if (items.isEmpty()) {
             showStatus("No lights, switches, scenes or scripts found", Kind.WARNING)
             return@withEntities
         }
-        val selected = config.homeEntityIds.toMutableList()
-        val checked = BooleanArray(candidates.size) { candidates[it].entityId in selected }
-        AlertDialog.Builder(this)
-            .setTitle("Home screen controls (up to ${HaConfig.MAX_HOME_ENTITIES})")
-            .setMultiChoiceItems(candidates.map(::label).toTypedArray(), checked) { dialog, which, isChecked ->
-                val id = candidates[which].entityId
-                if (isChecked && selected.size >= HaConfig.MAX_HOME_ENTITIES) {
-                    (dialog as AlertDialog).listView.setItemChecked(which, false)
-                    checked[which] = false
-                    return@setMultiChoiceItems
-                }
-                if (isChecked) selected += id else selected -= id
-            }
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Save") { _, _ -> save(config.copy(homeEntityIds = selected.distinct())) }
-            .create().also(::styleDialog).show()
+        HaEntityPicker.multi(this, "Home screen controls", items, HaDomains.HOME_CONTROL, current, HaConfig.MAX_HOME_ENTITIES) {
+            save(config.copy(homeEntityIds = it.distinct()))
+        }
     }
 
     private fun addDoorbell() = withEntities { entities ->
         val taken = config.doorbells.map { it.triggerEntityId }.toSet()
-        val candidates = sortedFor(entities, HaDomains.DOORBELL_TRIGGER) {
-            it.attributes["device_class"] == "doorbell" || it.entityId.contains("doorbell") || it.entityId.contains("ding")
-        }.filter { it.entityId !in taken }
-        if (candidates.isEmpty()) {
+        val byId = entities.associateBy { it.entityId }
+        val items = HaPickerModel.items(entities.filter { it.entityId !in taken }, registry, HaDomains.DOORBELL_TRIGGER)
+        if (items.isEmpty()) {
             showStatus("No binary sensors, buttons, or event entities found", Kind.WARNING)
             return@withEntities
         }
-        pick("Which entity means someone rang?", candidates.map(::label)) { index ->
-            val trigger = candidates[index].entityId
-            pickCamera(entities, null) { camera ->
+        HaEntityPicker.single(
+            this, "Which entity means someone rang?", items, HaDomains.DOORBELL_TRIGGER, current = null,
+            score = { item -> byId[item.entityId]?.let { HaPickerModel.doorbellScore(it, registry) } ?: 0 },
+        ) { trigger ->
+            if (trigger == null) return@single
+            pickCamera(entities, trigger, null) { camera ->
                 save(config.copy(doorbells = config.doorbells + DoorbellBinding(trigger, camera)))
             }
         }
     }
 
-    private fun pickCamera(entities: List<HaEntity>, current: String?, then: (String?) -> Unit) {
-        val cameras = sortedFor(entities, setOf(HaDomains.CAMERA))
-        val labels = listOf("No camera") + cameras.map(::label)
-        val checked = cameras.indexOfFirst { it.entityId == current } + 1
-        pick("Camera to show live", labels, checked) { index ->
-            then(if (index == 0) null else cameras[index - 1].entityId)
-        }
+    private fun pickCamera(entities: List<HaEntity>, trigger: String?, current: String?, then: (String?) -> Unit) {
+        val byId = entities.associateBy { it.entityId }
+        val domains = setOf(HaDomains.CAMERA)
+        val items = HaPickerModel.items(entities, registry, domains, keep = listOfNotNull(current))
+        HaEntityPicker.single(
+            this, "Camera to show live", items, domains, current, noneLabel = "No camera",
+            score = { item -> byId[item.entityId]?.let { HaPickerModel.cameraScore(it, trigger, registry) } ?: 0 },
+            onPick = then,
+        )
     }
 
     private fun editDoorbell(binding: DoorbellBinding) {
@@ -509,7 +511,7 @@ class HomeAssistantSettingsActivity : AppCompatActivity() {
         pick(runtime.ringTitle(binding), options) { choice ->
             when (choice) {
                 0 -> withEntities { entities ->
-                    pickCamera(entities, binding.cameraEntityId) { camera ->
+                    pickCamera(entities, binding.triggerEntityId, binding.cameraEntityId) { camera ->
                         save(config.copy(doorbells = config.doorbells.map {
                             if (it.id == binding.id) it.copy(cameraEntityId = camera) else it
                         }))

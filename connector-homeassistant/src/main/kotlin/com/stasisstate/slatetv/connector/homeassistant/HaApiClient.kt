@@ -57,6 +57,9 @@ class HaApiClient(
         parseStates(array)
     }
 
+    /** Area/device/entity registries for picker labels; partial or [HaRegistry.EMPTY] on failure. */
+    suspend fun registry(): HaRegistry = withContext(Dispatchers.IO) { HaRegistryLoader.load(this@HaApiClient, token) }
+
     suspend fun callService(call: ServiceCall) {
         withContext(Dispatchers.IO) {
             val body = JSONObject(call.data).toString().toRequestBody(JSON)
