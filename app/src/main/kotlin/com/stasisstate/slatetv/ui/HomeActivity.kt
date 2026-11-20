@@ -41,6 +41,7 @@ import com.stasisstate.slatetv.apps.AppInfo
 import com.stasisstate.slatetv.billing.TipJar
 import com.stasisstate.slatetv.calendar.CalendarAgenda
 import com.stasisstate.slatetv.calendar.GoogleCalendarSource
+import com.stasisstate.slatetv.connector.homeassistant.HaConfig
 import com.stasisstate.slatetv.connector.homeassistant.HaStatus
 import com.stasisstate.slatetv.connector.homeassistant.HomeAssistantRuntime
 import com.stasisstate.slatetv.connector.homeassistant.HomeAssistantSettingsActivity
@@ -535,7 +536,10 @@ class HomeActivity : AppCompatActivity() {
             },
         )
         lifecycleScope.launch {
-            HomeAssistantRuntime.config.combine(HomeAssistantRuntime.entities) { config, entities -> config to entities }
+            combine(HomeAssistantRuntime.config, HomeAssistantRuntime.entities, HomeAssistantRuntime.enabled) { config, entities, enabled ->
+                // An uninstalled integration renders like an unconfigured one: no tiles.
+                if (enabled) config to entities else HaConfig() to emptyMap()
+            }
                 .collect { (config, entities) ->
                     val hadFocus = haControls.hasFocus()
                     haControls.render(config, entities)

@@ -144,6 +144,20 @@ class LauncherCoreUnitTest {
     }
 
     @Test
+    fun `PluginRegistry hides uninstalled built-ins and falls back to Ambient`() {
+        val fakeLocal = object : BackgroundPlugin {
+            override val metadata = PluginMetadata("builtin.local", "Local", "desc", "1.0")
+            override suspend fun fetchNext(request: PluginRequestContext): BackgroundMedia? = null
+        }
+        var installed = false
+        val registry = PluginRegistry(context = null, localPlugin = fakeLocal, isBuiltInInstalled = { installed })
+        assertEquals(listOf(AmbientSlatePlugin.PLUGIN_ID), registry.getAllPlugins().map { it.metadata.id })
+        assertEquals(AmbientSlatePlugin.PLUGIN_ID, registry.getPluginById("builtin.local").metadata.id)
+        installed = true
+        assertEquals("builtin.local", registry.getPluginById("builtin.local").metadata.id)
+    }
+
+    @Test
     fun `PluginRegistry refreshes JSON extensions without overriding built-in IDs`() {
         val extA = object : BackgroundPlugin {
             override val metadata = PluginMetadata("extjson:alpine", "Alpine", "desc", "1.0")

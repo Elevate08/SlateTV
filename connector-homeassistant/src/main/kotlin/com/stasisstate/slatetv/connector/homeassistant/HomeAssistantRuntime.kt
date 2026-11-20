@@ -43,19 +43,36 @@ object HomeAssistantRuntime {
 
     val isInitialized: Boolean get() = ::appContext.isInitialized
 
-    fun init(context: Context, scope: CoroutineScope) {
+    private val _enabled = MutableStateFlow(true)
+
+    /** False while the plugin is uninstalled from the launcher's plugin manager. */
+    val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
+
+    fun init(context: Context, scope: CoroutineScope, enabled: Boolean = true) {
         if (isInitialized) return
         appContext = context.applicationContext
         this.scope = scope
         store = HaConfigStore(appContext)
         _config.value = store.load()
+        _enabled.value = enabled
+        restartConnection()
+        syncListener()
+    }
+
+    /**
+     * Installs or uninstalls the integration. Uninstalling stops the connection and doorbell
+     * listener but keeps the saved config so reinstalling restores it.
+     */
+    fun setEnabled(enabled: Boolean) {
+        if (!isInitialized || _enabled.value == enabled) return
+        _enabled.value = enabled
         restartConnection()
         syncListener()
     }
 
     /** True when doorbell alerts must keep working while another app is on screen. */
     fun shouldListenInBackground(config: HaConfig = _config.value): Boolean =
-        config.isConfigured && config.alertsEnabled && config.doorbells.isNotEmpty()
+        _enabled.value && config.isConfigured && config.alertsEnabled && config.doorbells.isNotEmpty()
 
     /** Starts/stops the background listener to match the config; call when Slate comes to the front. */
     fun syncListener() {
@@ -90,7 +107,7 @@ object HomeAssistantRuntime {
         _entities.value = emptyMap()
         val config = _config.value
         val watched = watchedEntityIds(config)
-        if (!config.isConfigured) {
+        if (!_enabled.value || !config.isConfigured) {
             _status.value = HaStatus.NotConfigured
             return
         }
@@ -181,4 +198,7 @@ object HomeAssistantRuntime {
     }
 
     const val QUICK_REPLY_EVENT = "slatetv_quick_reply"
+
+    /** Catalog id of this built-in plugin. */
+    const val PLUGIN_ID = "homeassistant"
 }

@@ -51,8 +51,10 @@ private object Ui {
 }
 
 /**
- * Manage extensions: add by phone QR code or URL (always behind an explicit confirmation),
- * enable/disable, test, set/clear API key, remove. Opened only via explicit intent.
+ * Plugin manager: browse plugin catalogs (first-party plus user-added sources), install,
+ * uninstall and reinstall catalog plugins (built-in connectors and JSON extensions), add
+ * extensions by phone QR code or URL (always behind an explicit confirmation), and manage
+ * installed extensions (enable/disable, test, API key, remove). Opened only via explicit intent.
  */
 class ExtensionsManagerActivity : AppCompatActivity() {
     private class Row(val view: LinearLayout, val title: TextView, val value: TextView)
@@ -60,6 +62,15 @@ class ExtensionsManagerActivity : AppCompatActivity() {
     private val scope = MainScope()
     private lateinit var store: ExtensionStore
     private lateinit var client: ExtensionClient
+    private lateinit var installState: PluginInstallState
+    private lateinit var sources: CatalogSourceStore
+
+    private var bundledCatalog: PluginCatalog? = null
+    private var fetchedCatalogs: List<PluginCatalog> = emptyList()
+    private var catalogNote: String = ""
+    private var catalogJob: Job? = null
+    private lateinit var catalogContainer: LinearLayout
+    private lateinit var catalogStatus: TextView
 
     private lateinit var statusView: TextView
     private lateinit var listContainer: LinearLayout
@@ -77,6 +88,9 @@ class ExtensionsManagerActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         store = ExtensionStore.create(applicationContext)
         client = ExtensionClient()
+        installState = PluginInstallState.get(applicationContext)
+        sources = CatalogSourceStore.create(applicationContext)
+        bundledCatalog = BundledPlugins.load(applicationContext)
 
         val content = column().apply {
             setBackgroundColor(Ui.BACKGROUND)
@@ -88,8 +102,8 @@ class ExtensionsManagerActivity : AppCompatActivity() {
             addView(content)
         })
 
-        content.addView(text("Extensions", 32f, Ui.TEXT, bold = true))
-        content.addView(text("Add community photo feeds and home shelves from any web address. Extensions only supply images and cards. They never run code on this device.", 17f, Ui.MUTED).apply {
+        content.addView(text("Plugins", 32f, Ui.TEXT, bold = true))
+        content.addView(text("Install, uninstall and reinstall plugins from the Slate TV catalog or any plugin source, or add a community extension by web address. Extensions only supply images and cards. They never run code on this device.", 17f, Ui.MUTED).apply {
             setPadding(0, dp(4), 0, dp(16))
         })
         statusView = text("", 17f, Ui.OK).apply {
@@ -99,7 +113,14 @@ class ExtensionsManagerActivity : AppCompatActivity() {
         }
         content.addView(statusView)
 
-        content.addView(sectionHeader("ADD AN EXTENSION"))
+        content.addView(sectionHeader("PLUGIN CATALOG"))
+        catalogStatus = text("", 15f, Ui.MUTED).apply { setPadding(dp(4), 0, 0, dp(8)) }
+        content.addView(catalogStatus)
+        catalogContainer = column()
+        content.addView(catalogContainer)
+        content.addView(row("Plugin Sources", "Add or remove catalog addresses (plugin repositories).") { showSources() }.view, rowParams())
+
+        content.addView(sectionHeader("ADD AN EXTENSION BY ADDRESS"))
         addQrRow = row("Add Extension via Phone QR Code", "Scan a code, then paste the manifest address on your phone.") { showPairing() }
         content.addView(addQrRow.view, rowParams())
         content.addView(row("Add Extension by URL", "Type the manifest address with the TV keyboard.") { promptForUrl() }.view, rowParams())
@@ -109,12 +130,155 @@ class ExtensionsManagerActivity : AppCompatActivity() {
         content.addView(listContainer)
 
         refreshList()
-        addQrRow.view.requestFocus()
+        (catalogContainer.getChildAt(0)?.takeIf { it.isFocusable } ?: addQrRow.view).requestFocus()
+        loadCatalogs()
+    }
+
+    // ---------------------------------------------------------------- catalog
+
+    /** Fetches every catalog source; the bundled snapshot is shown until (and if) they arrive. */
+    private fun loadCatalogs() {
+        catalogNote = "Checking for plugin updates…"
+        renderCatalog()
+        catalogJob?.cancel()
+        catalogJob = scope.launch {
+            val urls = sources.list()
+            val results = withContext(Dispatchers.IO) {
+                urls.map { url -> url to runCatching { client.fetchCatalog(url) } }
+            }
+            fetchedCatalogs = results.mapNotNull { it.second.getOrNull() }
+            val failed = results.filter { it.second.isFailure }.map { ExtensionUrlPolicy.parseHttpUrl(it.first)?.host ?: it.first }
+            catalogNote = if (failed.isEmpty()) "" else "Could not reach ${failed.joinToString()}. Showing the plugins available offline."
+            renderCatalog()
+        }
+    }
+
+    private fun catalogEntries(): List<CatalogEntry> =
+        CatalogParser.merge(bundledCatalog, fetchedCatalogs).filter {
+            it.kind == CatalogEntryKind.REMOTE || it.id in PluginInstallState.supportedBuiltIns
+        }
+
+    private fun isInstalled(entry: CatalogEntry) = when (entry.kind) {
+        CatalogEntryKind.BUILTIN -> installState.isBuiltInInstalled(entry.id)
+        CatalogEntryKind.REMOTE -> store.get(entry.id) != null
+    }
+
+    private fun renderCatalog() {
+        val focused = catalogContainer.focusedChild?.tag
+        catalogContainer.removeAllViews()
+        catalogStatus.text = catalogNote
+        catalogStatus.visibility = if (catalogNote.isEmpty()) View.GONE else View.VISIBLE
+        val entries = catalogEntries()
+        if (entries.isEmpty()) {
+            catalogContainer.addView(text("No catalog plugins available.", 17f, Ui.MUTED).apply { setPadding(dp(4), dp(4), 0, dp(8)) })
+            return
+        }
+        entries.forEach { entry ->
+            val installed = isInstalled(entry)
+            val parts = listOf(
+                if (entry.kind == CatalogEntryKind.BUILTIN) "Included with Slate TV" else entry.catalogName,
+                entry.type?.let { typeLabel(it) },
+                entry.version.takeIf { it.isNotEmpty() }?.let { "v$it" },
+                if (installed) "Installed" else "Not installed",
+            ).filterNotNull().joinToString(" · ")
+            val r = row(entry.name, parts) { showCatalogEntry(entry) }
+            r.value.setTextColor(if (installed) Ui.OK else Ui.MUTED)
+            r.view.tag = "catalog:${entry.id}"
+            catalogContainer.addView(r.view, rowParams())
+            if (r.view.tag == focused) r.view.requestFocus()
+        }
+    }
+
+    private fun showCatalogEntry(entry: CatalogEntry) {
+        val installed = isInstalled(entry)
+        if (entry.kind == CatalogEntryKind.REMOTE) {
+            if (installed) return showActions(entry.id)
+            val url = entry.manifestUrl ?: return
+            return startPreview(url, null, expectedId = entry.id)
+        }
+        val body = column().apply {
+            if (entry.description.isNotEmpty()) addView(text(entry.description, 17f, Ui.TEXT).apply { setPadding(0, 0, 0, dp(8)) })
+            addView(text(
+                if (installed) {
+                    "Uninstalling removes it from the home screen and settings and stops it running. Its saved settings (including any server address or sign-in) stay on this TV, so reinstalling restores them."
+                } else {
+                    "This plugin is included with Slate TV. Reinstalling restores any settings you saved before."
+                },
+                15f, Ui.MUTED,
+            ))
+        }
+        lateinit var dialog: Dialog
+        dialog = tvDialog(
+            entry.name, body,
+            (if (installed) "Uninstall" else "Install") to {
+                dialog.dismiss()
+                installState.setBuiltInInstalled(entry.id, !installed)
+                setStatus(if (installed) "${entry.name} uninstalled." else "${entry.name} installed.")
+                renderCatalog()
+            },
+            "Cancel" to { dialog.dismiss() },
+            initialFocus = if (installed) 1 else 0,
+        )
+    }
+
+    private fun showSources() {
+        lateinit var dialog: Dialog
+        val body = column()
+        body.addView(text("Catalogs are JSON lists of plugins hosted on any website (for example a GitHub Pages repository). Only add sources you trust.", 15f, Ui.MUTED).apply {
+            setPadding(0, 0, 0, dp(8))
+        })
+        sources.list().forEach { url ->
+            val isDefault = url == DEFAULT_CATALOG_URL
+            val name = fetchedCatalogs.firstOrNull { it.url == url }?.name ?: bundledCatalog?.takeIf { isDefault }?.name
+            val r = row(name ?: (ExtensionUrlPolicy.parseHttpUrl(url)?.host ?: url), if (isDefault) "$url · first-party" else url) {
+                if (isDefault) return@row
+                dialog.dismiss()
+                confirmRemoveSource(url)
+            }
+            body.addView(r.view, rowParams())
+        }
+        body.addView(row("Add Plugin Source", "Enter a catalog.json address", centered = true) {
+            dialog.dismiss()
+            editDialog(
+                title = "Add Plugin Source",
+                hint = "https://example.github.io/plugins/catalog.json",
+                initial = "",
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS,
+                maxLength = ExtensionUrlPolicy.MAX_URL_LENGTH,
+                validate = {
+                    if (ExtensionUrlPolicy.validateManifestUrl(it) == null) {
+                        "Enter an https:// address. http:// works only for addresses on your local network."
+                    } else null
+                },
+            ) { value ->
+                runCatching { sources.add(value) }
+                    .onSuccess { setStatus("Plugin source added."); loadCatalogs() }
+                    .onFailure { setStatus(it.message ?: "Could not add the plugin source.", Ui.BAD) }
+            }
+        }.view, rowParams())
+        dialog = tvDialog("Plugin Sources", body, "Close" to { dialog.dismiss() })
+    }
+
+    private fun confirmRemoveSource(url: String) {
+        lateinit var dialog: Dialog
+        dialog = tvDialog(
+            "Remove this plugin source?",
+            text("$url\n\nPlugins already installed from it stay installed.", 16f, Ui.MUTED),
+            "Remove" to {
+                dialog.dismiss()
+                sources.remove(url)
+                setStatus("Plugin source removed.")
+                loadCatalogs()
+            },
+            "Cancel" to { dialog.dismiss() },
+            initialFocus = 1,
+        )
     }
 
     // ---------------------------------------------------------------- list
 
     private fun refreshList() {
+        if (::catalogContainer.isInitialized) renderCatalog()
         listContainer.removeAllViews()
         val installed = store.list()
         if (installed.isEmpty()) {
@@ -175,12 +339,16 @@ class ExtensionsManagerActivity : AppCompatActivity() {
     }
 
     /** Fetches the manifest and shows the confirmation dialog. Nothing is saved before the user confirms. */
-    private fun startPreview(url: String, apiKey: String?) {
+    private fun startPreview(url: String, apiKey: String?, expectedId: String? = null) {
         setStatus("Checking extension…", Ui.MUTED)
         job?.cancel()
         job = scope.launch {
             try {
                 val manifest = withContext(Dispatchers.IO) { client.fetchManifest(url, apiKey) }
+                if (expectedId != null && manifest.id != expectedId) {
+                    setStatus("This catalog entry does not match the plugin it points to, so it was not installed.", Ui.BAD)
+                    return@launch
+                }
                 setStatus("")
                 showInstallPreview(manifest, apiKey)
             } catch (e: CancellationException) {
@@ -195,7 +363,7 @@ class ExtensionsManagerActivity : AppCompatActivity() {
                         inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS,
                         maxLength = 512,
                         validate = { if (!AuthHeader.validKey(it)) "Enter a valid API key (visible characters only)." else null },
-                    ) { key -> startPreview(url, key) }
+                    ) { key -> startPreview(url, key, expectedId) }
                 } else {
                     setStatus(e.message ?: "Could not read the extension.", Ui.BAD)
                 }

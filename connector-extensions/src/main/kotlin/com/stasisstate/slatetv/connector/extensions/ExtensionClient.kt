@@ -21,6 +21,13 @@ internal class ExtensionClient(val http: ExtensionHttp = ExtensionHttp()) {
         return ManifestParser.parse(result.body, parsed)
     }
 
+    /** Fetches a plugin catalog. Never sends credentials: catalogs are public indexes. */
+    fun fetchCatalog(url: String): PluginCatalog {
+        val parsed = ExtensionUrlPolicy.validateManifestUrl(url)
+            ?: throw ExtensionException("Enter an https:// URL. http:// is only allowed for addresses on your local network.")
+        return CatalogParser.parse(http.get(parsed).body, parsed)
+    }
+
     fun fetchBackground(manifest: ExtensionManifest, apiKey: String?): List<FeedItem> {
         val url = endpoint(manifest.backgroundUrl, manifest)
         return BackgroundFeedParser.parse(http.get(url, authFor(manifest, apiKey)).body)

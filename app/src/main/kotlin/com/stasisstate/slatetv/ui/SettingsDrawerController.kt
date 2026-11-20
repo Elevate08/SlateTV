@@ -17,6 +17,8 @@ import com.stasisstate.slatetv.apps.AppRepository
 import com.stasisstate.slatetv.billing.TipJarState
 import com.stasisstate.slatetv.connector.extensions.ExtensionRegistry
 import com.stasisstate.slatetv.connector.extensions.ExtensionsManagerActivity
+import com.stasisstate.slatetv.connector.extensions.PluginInstallState
+import com.stasisstate.slatetv.connector.homeassistant.HomeAssistantRuntime
 import com.stasisstate.slatetv.connector.livetv.AppChannelsSettingsActivity
 import com.stasisstate.slatetv.connector.livetv.BuiltInAppChannelsProvider
 import com.stasisstate.slatetv.settings.DefaultLauncherHelper
@@ -175,27 +177,29 @@ internal class SettingsDrawerController(
             launchPluginActivity(context, context.packageName, AppChannelsSettingsActivity::class.java.name)
         }
 
-        addSectionHeader("EXTENSIONS")
+        addSectionHeader("PLUGINS")
         val extensionCount = runCatching { extensionRegistry.installedExtensions().size }.getOrDefault(0)
         addRow(
-            "Manage JSON Extensions",
+            "Manage Plugins",
             if (extensionCount > 0) {
-                "$extensionCount installed — add photo feeds or shelves via QR / URL"
+                "Browse the plugin catalog · $extensionCount extensions installed"
             } else {
-                "Add photo feeds or home shelves via QR code or URL (no APKs)"
+                "Browse, install and uninstall plugins, or add one by URL"
             },
             "manage-json-extensions",
         ) {
             launchPluginActivity(context, context.packageName, ExtensionsManagerActivity::class.java.name)
         }
 
-        addSectionHeader(context.getString(R.string.ha_settings_section))
-        addRow(
-            context.getString(R.string.ha_settings_title),
-            homeAssistantStatus(),
-            "home-assistant",
-            onClick = onHomeAssistantClicked,
-        )
+        if (PluginInstallState.get(context).isBuiltInInstalled(HomeAssistantRuntime.PLUGIN_ID)) {
+            addSectionHeader(context.getString(R.string.ha_settings_section))
+            addRow(
+                context.getString(R.string.ha_settings_title),
+                homeAssistantStatus(),
+                "home-assistant",
+                onClick = onHomeAssistantClicked,
+            )
+        }
 
         addSectionHeader("DISPLAY & GALLERY")
 

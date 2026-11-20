@@ -1,6 +1,6 @@
 # Developing Zero-Code JSON Extensions for Slate TV
 
-Slate TV supports community **photo feeds** and **home shelves** through a zero-code **Open HTTP/JSON Extension Protocol (v1)**. Extensions require **no Android APK, no sideloading, no Play Store account, and no code running on the TV**—just host a `manifest.json` file (static GitHub Pages, Cloudflare Worker, or a local LAN server) and add its URL from **Slate TV Settings → Extensions → Manage JSON Extensions** via Phone QR Code or direct URL.
+Slate TV supports community **photo feeds** and **home shelves** through a zero-code **Open HTTP/JSON Extension Protocol (v1)**. Extensions require **no Android APK, no sideloading, no Play Store account, and no code running on the TV**—just host a `manifest.json` file (static GitHub Pages, Cloudflare Worker, or a local LAN server) and add its URL from **Slate TV Settings → Plugins → Manage Plugins** via Phone QR Code or direct URL.
 
 ---
 
@@ -94,6 +94,45 @@ Serve a JSON document over **HTTPS** (or **HTTP** on a private RFC 1918 / `.loca
 
 ## 4. Installing on Android TV
 
-1. Open **Slate TV Settings → Extensions → Manage JSON Extensions**.
+1. Open **Slate TV Settings → Plugins → Manage Plugins**.
 2. Choose **Add Extension via Phone QR Code** (recommended—paste the manifest URL and optional API key on your phone browser using a one-time PIN) or **Add Extension by URL**.
 3. Review the on-TV confirmation screen showing extension name, author, origin host, and type, then select **Install**.
+
+---
+
+## 5. Plugin Catalogs (Plugin Repositories)
+
+A **catalog** is a static `catalog.json` that lists plugins. Slate TV shows every catalog entry under **Manage Plugins → Plugin Catalog**, where users install, uninstall and reinstall plugins with one click.
+
+- **First-party catalog:** [`Elevate08/slatetv-plugins`](https://github.com/Elevate08/slatetv-plugins), published with GitHub Pages at `https://elevate08.github.io/slatetv-plugins/catalog.json`. Slate TV always reads it, and it cannot be removed.
+- **Bundled snapshot:** the APK ships a copy at `connector-extensions/src/main/assets/slatetv/bundled_catalog.json`. The catalog therefore works offline, and entries marked `"preinstall": true` install on first run. Each one installs once per device; after the user uninstalls it, it stays uninstalled. Regenerate the snapshot with `scripts/export_bundled.py` in the plugins repo.
+- **More sources:** users can add any catalog URL under **Plugin Sources**. Untrusted catalogs cannot pre-install plugins, and installing from one always goes through the normal confirmation screen.
+
+```json
+{
+  "schemaVersion": 1,
+  "name": "My Plugins",
+  "plugins": [
+    {
+      "id": "com.example.alpine-gallery",
+      "kind": "remote",
+      "name": "Alpine Gallery",
+      "description": "Curated daily mountain photography",
+      "author": "Your Name",
+      "version": "1.0.0",
+      "type": "background",
+      "manifestUrl": "alpine/manifest.json"
+    }
+  ]
+}
+```
+
+| Field | Notes |
+| :--- | :--- |
+| `id` | Must equal the manifest `id`. Slate TV refuses to install the plugin if they differ. |
+| `kind` | `remote` (default) or `builtin`. A `builtin` entry names a connector compiled into Slate TV (`immich`, `homeassistant`, `livetv`). Installing or uninstalling it only shows or hides the connector and starts or stops it; its saved settings are kept. |
+| `manifestUrl` | Relative to the catalog URL, or an absolute `https://` URL on any host. |
+
+Catalogs are limited to 200 entries and 1 MiB, and are fetched without credentials. On a GitHub **project** Pages site, the files live under `/<repo>/`, so write manifest endpoints as relative paths (`backgrounds.json`). A leading `/` resolves to the domain root.
+
+> Native connectors cannot be downloaded: Android TV and Google Play do not allow an app to load code from the internet. New native connectors ship in app updates and appear in the catalog as `builtin` entries. Everything else is a zero-code JSON extension that can live in any catalog.

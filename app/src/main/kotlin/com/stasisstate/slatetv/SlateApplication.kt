@@ -4,9 +4,12 @@ import android.app.Application
 import android.util.Log
 import com.stasisstate.slatetv.apps.AppRepository
 import com.stasisstate.slatetv.apps.DockPreferences
+import com.stasisstate.slatetv.connector.extensions.BundledPlugins
 import com.stasisstate.slatetv.connector.extensions.ExtensionRegistry
+import com.stasisstate.slatetv.connector.extensions.PluginInstallState
 import com.stasisstate.slatetv.connector.homeassistant.HomeAssistantRuntime
 import com.stasisstate.slatetv.connector.immich.BuiltInImmichPlugin
+import com.stasisstate.slatetv.connector.livetv.BuiltInLiveTvShelfPlugin
 import com.stasisstate.slatetv.settings.LauncherPreferences
 import com.stasisstate.slatetv.wallpaper.BitmapLoader
 import com.stasisstate.slatetv.wallpaper.WallpaperDiskCache
@@ -57,6 +60,18 @@ class SlateApplication : Application() {
         dockPreferences = DockPreferences(this)
         appRepository = AppRepository(this)
         extensionRegistry = ExtensionRegistry(this)
+        // Built-in plugins the plugin manager may uninstall/reinstall (their code always ships in the APK).
+        PluginInstallState.supportedBuiltIns = setOf(
+            BuiltInImmichPlugin.PLUGIN_ID,
+            HomeAssistantRuntime.PLUGIN_ID,
+            BuiltInLiveTvShelfPlugin.PLUGIN_ID,
+        )
+        val installState = PluginInstallState.get(this)
+        PluginInstallState.addListener { id, installed ->
+            if (id == HomeAssistantRuntime.PLUGIN_ID) HomeAssistantRuntime.setEnabled(installed)
+        }
+        // First-run install of bundled first-party plugins marked "preinstall" (never re-added once removed).
+        BundledPlugins.seed(this)
         // One-time cleanup of the removed Jellyfin server Live TV source (credentials, key alias, cached logos).
         appScope.launch(Dispatchers.IO) {
             runCatching { com.stasisstate.slatetv.connector.livetv.LiveTvConfigStore(this@SlateApplication).migrateLegacyState() }
@@ -71,6 +86,7 @@ class SlateApplication : Application() {
             legacyBuiltInAliases = mapOf(
                 BuiltInImmichPlugin.LEGACY_EXTERNAL_ID to BuiltInImmichPlugin.PLUGIN_ID,
             ),
+            isBuiltInInstalled = installState::isBuiltInInstalled,
         ).apply {
             refreshExtensions()
         }
@@ -85,6 +101,6 @@ class SlateApplication : Application() {
         )
 
         // Home Assistant lives at application scope so doorbell rings arrive while other apps are in front.
-        HomeAssistantRuntime.init(this, appScope)
+        HomeAssistantRuntime.init(this, appScope, enabled = installState.isBuiltInInstalled(HomeAssistantRuntime.PLUGIN_ID))
     }
 }

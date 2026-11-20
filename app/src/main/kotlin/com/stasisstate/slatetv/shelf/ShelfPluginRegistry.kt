@@ -2,6 +2,7 @@ package com.stasisstate.slatetv.shelf
 
 import android.content.Context
 import com.stasisstate.slatetv.connector.extensions.ExtensionRegistry
+import com.stasisstate.slatetv.connector.extensions.PluginInstallState
 import com.stasisstate.slatetv.connector.livetv.BuiltInAppChannelsProvider
 import com.stasisstate.slatetv.connector.livetv.BuiltInLiveTvShelfPlugin
 import com.stasisstate.slatetv.plugin.api.ShelfPlugin
@@ -68,9 +69,11 @@ private fun discovery(
 ): () -> List<ShelfPlugin> {
     val builtInLiveTv = BuiltInLiveTvShelfPlugin(context)
     val builtInAppChannels = BuiltInAppChannelsProvider(context)
+    val installState = PluginInstallState.get(context)
     return {
         val appChannels = runCatching { builtInAppChannels.shelfPlugins() }.getOrDefault(emptyList())
         val jsonExtensions = runCatching { extensionRegistry.shelfPlugins() }.getOrDefault(emptyList())
-        listOf<ShelfPlugin>(builtInLiveTv) + appChannels + jsonExtensions
+        val liveTv = listOfNotNull(builtInLiveTv.takeIf { installState.isBuiltInInstalled(BuiltInLiveTvShelfPlugin.PLUGIN_ID) })
+        liveTv + appChannels + jsonExtensions
     }
 }

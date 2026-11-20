@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "name": "Slate TV Plugins",
+  "plugins": [
+    {
+      "id": "immich",
+      "kind": "builtin",
+      "name": "Immich Photos",
+      "description": "Backgrounds from your self-hosted Immich library.",
+      "author": "Slate TV",
+      "type": "background"
+    },
+    {
+      "id": "homeassistant",
+      "kind": "builtin",
+      "name": "Home Assistant",
+      "description": "Home controls on the home screen and doorbell camera alerts.",
+      "author": "Slate TV"
+    },
+    {
+      "id": "livetv",
+      "kind": "builtin",
+      "name": "Live TV",
+      "description": "A home shelf and guide for Android TV Live Channels.",
+      "author": "Slate TV",
+      "type": "shelf"
+    },
+    {
+      "id": "com.stasisstate.slatetv.wikimedia-potd",
+      "kind": "remote",
+      "name": "Wikimedia Picture of the Day",
+      "description": "Freely licensed photos from Wikimedia Commons, refreshed daily.",
+      "author": "Slate TV",
+      "version": "1.0.0",
+      "type": "background",
+      "manifestUrl": "plugins/wikimedia-potd/manifest.json",
+      "preinstall": false,
+      "manifest": {
+        "schemaVersion": 1,
+        "id": "com.stasisstate.slatetv.wikimedia-potd",
+        "name": "Wikimedia Picture of the Day",
+        "description": "Freely licensed photos from Wikimedia Commons, refreshed daily.",
+        "version": "1.0.0",
+        "author": "Slate TV",
+        "type": "background",
+        "backgroundEndpoint": "backgrounds.json",
+        "refreshIntervalSeconds": 21600
+      }
+    }
+  ]
+}

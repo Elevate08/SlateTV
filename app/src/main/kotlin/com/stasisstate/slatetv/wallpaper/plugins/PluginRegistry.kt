@@ -14,6 +14,8 @@ class PluginRegistry(
     private val extraBuiltInPlugins: List<BackgroundPlugin> = emptyList(),
     private val jsonExtensionProvider: () -> List<BackgroundPlugin> = { emptyList() },
     private val legacyBuiltInAliases: Map<String, String> = emptyMap(),
+    /** False for built-in plugins the user uninstalled from the plugin manager. */
+    private val isBuiltInInstalled: (String) -> Boolean = { true },
 ) {
     private val builtInPlugins: List<BackgroundPlugin> = (
         listOfNotNull(ambientPlugin, localPlugin) + extraBuiltInPlugins
@@ -33,7 +35,8 @@ class PluginRegistry(
         return refreshed
     }
 
-    fun getAllPlugins(): List<BackgroundPlugin> = builtInPlugins + extensionPlugins
+    fun getAllPlugins(): List<BackgroundPlugin> =
+        builtInPlugins.filter { it === ambientPlugin || isBuiltInInstalled(it.metadata.id) } + extensionPlugins
 
     fun getPluginById(id: String): BackgroundPlugin {
         val all = getAllPlugins()
